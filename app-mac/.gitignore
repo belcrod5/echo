@@ -1,0 +1,15 @@
+# Xcode-generated build artefacts
+xcode_build_settings.json
+compile_commands.json
+compile_flags.txt
+.build/
+DerivedData/
+
+# User-specific settings (冗長だが安全策)
+xcuserdata/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# Server
+echo/Resources/server.zip

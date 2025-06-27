@@ -1,0 +1,9 @@
+node_modules/
+logs/
+data/
+server/
+
+# Local secret configs
+settings/llm_configs.json
+settings/server_configs.json
+.env

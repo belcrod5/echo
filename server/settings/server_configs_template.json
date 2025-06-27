@@ -1,0 +1,19 @@
+[
+    {
+        "command": "npx",
+        "args": [
+            "@playwright/mcp@latest",
+            "--cdp-endpoint",
+            "http://localhost:9222"
+        ]
+    },
+    {
+        "command": "npx",
+        "args": [
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+            "${HOME}/Desktop",
+            "/path/to/other/allowed/dir"
+        ]
+    }
+]

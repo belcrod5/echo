@@ -90,6 +90,14 @@ brew install node
 ```
 詳細は [mac-control-mcp](https://github.com/belcrod5/mac-control-mcp) をご確認ください
 
+#### nodeが認識しない場合
+ターミナルで `which node`とコマンドを実行したnodeのフルパスを使うと確実に動作します
+```bash
+例
+% which node
+/Users/{ユーザー名}/.nodebrew/current/bin/node
+```
+
 ## 使い方
 
 基本的な使い方をいくつか紹介します。

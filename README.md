@@ -49,6 +49,10 @@ macOS向けの音声操作アシスタントです。OSの操作や定型的な�
 
 アプリケーションを動作させるには、いくつかの初期設定が必要です。
 
+### アプリケーションの起動
+* “Echo”からマイクにアクセスしようとしています。音声認識のためにマイクを使用します→許可
+* 初回起動すると'~/Library/Application Support/echo/server'にディレクトリが作成されます
+
 ### 最低限の設定
 '~/Library/Application Support/echo/server'のディレクトリを開きます
 
@@ -62,6 +66,8 @@ macOS向けの音声操作アシスタントです。OSの操作や定型的な�
 1. **.env**の OPENROUTER_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY のどちらかにAPIキーを設定します
 1. **llm_configs.json** providerを "gemini"もしくは"openrouter"のどちらかを指定
 1. **server_configs.json** *@modelcontextprotocol/server-filesystem*<br />メモなどのファイルアクセスを許可するパスを設定。詳しくは [filesystem mcp](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem) をご確認ください
+
+* MCPの設定次第では“Echo”から“◯◯”フォルダ内のファイルにアクセスしようとしています。と許可がもとめられます
 
 ### 推奨のセットアップ
 [mac-control-mcp](https://github.com/belcrod5/mac-control-mcp) をダウンロードし
@@ -82,10 +88,13 @@ macOS向けの音声操作アシスタントです。OSの操作や定型的な�
 
 | 操作内容 | 音声コマンドの例 |
 | :--- | :--- |
-| **YouTubeを停止する** | 「Youtubeでオムライスの作り方を検索してください」 | 
-| **買い物リストに追加** | 「買い物リストに卵を追加して」 | 
-| **天気を尋ねる** | 「今日の天気は？」 | 
+| **YouTubeを停止する** | 「Youtubeでオムライスの作り方を検索してください 確定」 | 
+| **買い物リストに追加** | 「買い物リストに卵を追加して 確定」 | 
+| **天気を尋ねる** | 「今日の天気は？ 確定」 | 
+| **アプリケーションの終了** | 「アプリケーション終了 確定」 | 
 
+Hey Siriとは異なり、話してから「確定」と言う事で送信になります。入力をやり直す場合は「キャンセル」で入力のリセットができます。
+滑舌やイントネーションの問題で「確定」が認識しずらい場合は設定で変更が可能です。\n（改行）は認識されやすいです。
 
 ---
 

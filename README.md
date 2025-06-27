@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/echo-logo.png" alt="Echo Logo" width="200">
+  <img src="docs/images/echo-logo.jpg" alt="Echo Logo" width="200">
 </p>
 
 # Echo

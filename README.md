@@ -7,6 +7,7 @@
 macOS向けの音声操作アシスタントです。OSの操作や定型的なタスクを、ユーザーの隣にいるエージェントとして実行することを目指しています。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Sponsor](https://img.shields.io/github/sponsors/belcrod5)](https://github.com/sponsors/belcrod5)
 
 ## 概要
 

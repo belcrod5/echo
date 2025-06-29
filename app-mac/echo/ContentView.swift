@@ -54,6 +54,7 @@ struct ContentView: View {
     @State private var startFrame: NSRect?   = nil
     @State private var startMouse: NSPoint?  = nil
     @State private var hasCentered          = false
+    @State private var topPadding: CGFloat = 30
     #endif
 
     // スクロール設定
@@ -129,7 +130,12 @@ struct ContentView: View {
                         }
                     }
                 }
+                #if os(macOS)
+                .padding(.top, topPadding)
+                .padding([.leading, .trailing, .bottom], 30 * zoomScale)
+                #else
                 .padding(30 * zoomScale)
+                #endif
             // }
         }
         .onChange(of: zoomScale) { newScale in
@@ -144,6 +150,9 @@ struct ContentView: View {
             // withAnimation(.easeInOut(duration: 0.3)) {
             //     dynamicMaxWidth = newWidth
             // }
+#if os(macOS)
+            updateTopPadding()
+#endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
@@ -154,24 +163,10 @@ struct ContentView: View {
             self.window = win
             if let w = win, !hasCentered { centerWindow(w); hasCentered = true }
         })
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in
-                    guard let win = window else { return }
-                    if startFrame == nil {
-                        startFrame = win.frame
-                        startMouse = NSEvent.mouseLocation
-                        return
-                    }
-                    guard let f = startFrame, let m = startMouse else { return }
-                    let cur = NSEvent.mouseLocation
-                    var new = f
-                    new.origin.x += cur.x - m.x
-                    new.origin.y += cur.y - m.y
-                    win.setFrame(new, display: true)
-                }
-                .onEnded { _ in startFrame = nil; startMouse = nil }
-        )
+        // ウインドウ移動を監視してパディングを更新
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMoveNotification)) { _ in
+            updateTopPadding()
+        }
         #endif
 
         // ───────── ViewModel Hooks ─────────
@@ -239,6 +234,21 @@ struct ContentView: View {
         f.origin.x = screen.frame.midX - f.width / 2
         f.origin.y = screen.frame.midY - f.height / 2
         win.setFrame(f, display: true)
+    }
+
+    private func updateTopPadding() {
+        guard let win = window, let screen = win.screen else { return }
+        let visibleTop = screen.visibleFrame.maxY
+        let buffer: CGFloat = 5
+        let distance = max(0, visibleTop - win.frame.maxY + buffer)
+        let base = 30 * zoomScale
+        let newVal = min(base, distance)
+#if DEBUG
+        print("updateTopPadding visibleTop=\(visibleTop), distance=\(distance), base=\(base), newVal=\(newVal), winTop=\(win.frame.maxY), screenTop=\(screen.frame.maxY)")
+#endif
+        if abs(newVal - topPadding) > 0.5 {
+            topPadding = newVal
+        }
     }
     #endif
 }

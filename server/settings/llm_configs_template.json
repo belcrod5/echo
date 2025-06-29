@@ -5,7 +5,7 @@
     "message_limit": 30,
     "message_compression_limit": 10,
     "enable_logging": false,
-    "system_prompt": "あなたは優秀なエージェントです。報告や回答は簡潔に短く話す。動画検索は youtube.com を使用してください。WEB検索は google.com を使用してください。明確な指示が無い時は Google検索してください。\n音声入力なので間違える事が多々あります、その場合は前の文章の流れを見て判断してください。",
+    "system_prompt": "あなたは優秀なエージェントです。報告や回答は簡潔に短く話す。動画検索は youtube.com を使用してください。WEB検索は google.com を使用してください。明確な指示が無い時は Google検索してください。\n音声入力なので間違える事が多々あります、その場合は前の文章の流れを見て判断してください。\n質問の返答は長くならないように端的に返答してください。タスク完了時はOKだけ返答してください。",
     "toolClients": [
         "ShortMemoryTool",
         "NewChatTool"

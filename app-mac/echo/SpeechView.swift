@@ -403,7 +403,7 @@ struct SpeechView: View {
             if viewModel.isListening {
                 // === Mic ON: 入力表示用アニメーションのみ ===================
                 if buffer.text.isEmpty {
-                    Text("Siriにタイプ入力")
+                    Text("Echoにタイプ入力")
                         .font(.system(size: 17 * zoom))
                         .foregroundColor(.gray.opacity(0.7))
                         .padding(.top, 8 * zoom)
@@ -421,7 +421,7 @@ struct SpeechView: View {
                 ZStack(alignment: .topLeading) {
                     // プレースホルダーテキスト
                     if shouldShowPlaceholder {
-                        Text("Siriにタイプ入力")
+                        Text("Echoにタイプ入力")
                             .font(.system(size: 17 * zoom))
                             .foregroundColor(.gray.opacity(0.7))
                             .padding(.top, 8 * zoom)

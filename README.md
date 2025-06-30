@@ -17,6 +17,11 @@ macOS向けの音声操作アシスタントです。OSの操作や定型的な�
 
 **現在のバージョン:** `0.01`
 
+## デモ動画
+[![デモを YouTube で視聴](https://img.youtube.com/vi/3XjeNgznvN0/hqdefault.jpg)](https://www.youtube.com/watch?v=3XjeNgznvN0 "クリックして YouTube を開く")
+
+👆️ 画像をクリックするとブラウザで YouTube が開きます
+
 ### 主な機能 (v0.01)
 * 音声入力でAIと対話し、タスクを依頼できる  
 * AIの返答は音声で返ってくる  

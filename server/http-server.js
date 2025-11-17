@@ -8,6 +8,25 @@ import path from 'node:path';
 const client = new MCPClient();
 await client.init();
 
+function normalizeUsage(usage) {
+    if (!usage || typeof usage !== 'object') {
+        return usage ?? null;
+    }
+
+    const alreadyNormalized = ['promptTokens', 'completionTokens', 'totalTokens']
+        .every((key) => Object.prototype.hasOwnProperty.call(usage, key));
+    if (alreadyNormalized) {
+        return usage;
+    }
+
+    const promptTokens = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0)
+        + Number(usage.cached_input_tokens ?? usage.cached_prompt_tokens ?? 0);
+    const completionTokens = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
+    const totalTokens = promptTokens + completionTokens;
+
+    return { promptTokens, completionTokens, totalTokens };
+}
+
 const server = http.createServer(async (req, res) => {
     if (req.method === 'POST') {
         let body = '';
@@ -42,7 +61,8 @@ const server = http.createServer(async (req, res) => {
                     }
                 });
 
-                res.write(`data: ${JSON.stringify({ ...meta, object: 'chat.completion.chunk', choices: [{ delta: {}, finish_reason: 'stop', index: 0 }], usage: totalUsage })}\n\n`);
+                const formattedUsage = normalizeUsage(totalUsage);
+                res.write(`data: ${JSON.stringify({ ...meta, object: 'chat.completion.chunk', choices: [{ delta: {}, finish_reason: 'stop', index: 0 }], usage: formattedUsage })}\n\n`);
                 res.write('data: [DONE]\n\n');
             } catch (error) {
                 console.error("[DEBUG] Error during processQueryStream or SSE writing:", error);

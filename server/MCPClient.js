@@ -80,7 +80,7 @@ class MCPClient {
     constructor() {
         /** @type {{role:"user"|"assistant"|"tool", content:any}[]} */
         this.messages = [];
-        this.short_memory = [];
+        this.conversationPreludeSent = false;
     /** @type {Client[]}      */ this.clients = [];
     /** @type {StdioClientTransport[]} */ this.transports = [];
     /** @type {ChildProcess[]} */ this.startupProcesses = [];
@@ -583,15 +583,16 @@ class MCPClient {
 
     buildCodexPrompt(query) {
         const parts = [];
+        const shouldIncludePrelude = !this.conversationPreludeSent;
 
-        if (this.llm_configs?.system_prompt) {
-            parts.push(this.llm_configs.system_prompt);
-        }
+        if (shouldIncludePrelude) {
+            if (this.llm_configs?.system_prompt) {
+                parts.push(this.llm_configs.system_prompt);
+            }
 
-        parts.push(`現在の時刻: ${dayjs().format("YYYY-MM-DD HH:mm")}`);
+            parts.push(`現在の時刻: ${dayjs().format("YYYY-MM-DD HH:mm")}`);
 
-        if (Array.isArray(this.short_memory) && this.short_memory.length > 0) {
-            parts.push(`短期記憶:\n* ${this.short_memory.join("\n* ")}`);
+            this.conversationPreludeSent = true;
         }
 
         const queryText = typeof query === "string"
@@ -606,7 +607,7 @@ class MCPClient {
     saveMessages() {
         fs.writeFileSync(path.join(DATA_DIR, "messages.json"), JSON.stringify({
             messages:this.messages,
-            short_memory:this.short_memory
+            conversationPreludeSent:this.conversationPreludeSent,
         }, null, 2));
     }
 
@@ -617,8 +618,8 @@ class MCPClient {
         }
         try {
             const messages = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "messages.json"), "utf8"));
-            this.messages = messages.messages;
-            this.short_memory = messages.short_memory;
+            this.messages = Array.isArray(messages.messages) ? messages.messages : [];
+            this.conversationPreludeSent = Boolean(messages.conversationPreludeSent);
         } catch (e) {
             console.error("[MCPClient] Failed to load messages:", e);
         }

@@ -27,8 +27,9 @@ class NewChatTool extends ToolClient {
           return "ERROR: Operation not authorized by user.";
         }
 
-        // Reset chat message history and short memory
+        // Reset chat message history and conversation prelude flag
         mcp.messages = [];
+        mcp.conversationPreludeSent = false;
         return "Chat history has been reset. New conversation started.";
       }
     });

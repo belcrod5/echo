@@ -469,6 +469,7 @@ class MCPClient {
         let buffer = "";
         let assistantText = "";
         let totalUsage = null;
+        let textTokensEmitted = false;
         const delimRe = /[。、！]/u;
 
         const flushBuffer = () => {
@@ -478,6 +479,7 @@ class MCPClient {
                 const cut = 10 + idx + 1;
                 const chunk = buffer.slice(0, cut);
                 onToken?.(chunk, "text");
+                textTokensEmitted = true;
                 console.log(`buffer, [${chunk}]`);
                 buffer = buffer.slice(cut);
             }
@@ -556,8 +558,9 @@ class MCPClient {
             if (buffer.length && !/^\s*$/.test(buffer)) {
                 console.log(`buffer, [${buffer}]`);
                 onToken?.(buffer, "text", totalUsage);
+                textTokensEmitted = true;
                 buffer = "";
-            } else if (assistantText && onToken) {
+            } else if (!textTokensEmitted && assistantText && onToken) {
                 onToken(assistantText, "text", totalUsage);
             }
 

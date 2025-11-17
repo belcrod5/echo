@@ -23,30 +23,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let root = ContentView(onZoomToggle: { zoomValue in
             print("ContentView.onZoomToggle called! \(zoomValue)")
             
-            // ウインドウサイズをアニメーション付きで変更（左上を基準点に）
-            let currentFrame = self.window.frame
-            let currentX = currentFrame.origin.x
-            let currentY = currentFrame.origin.y
-            let currentHeight = currentFrame.size.height
-            let screenHeight = NSScreen.main?.frame.height ?? 1000
-            let maxHeight = min(640 * zoomValue, screenHeight)
-            let newSize = NSSize(width: 480 * zoomValue, height: maxHeight)
+            guard let window = self.window,
+                  let screen = window.screen ?? NSScreen.main else {
+                return
+            }
+            
+            let visibleFrame = screen.visibleFrame
+            let currentFrame = window.frame
+            
+            // 希望サイズを画面の表示領域に合わせてクランプ
+            let targetWidth = min(480 * zoomValue, visibleFrame.width)
+            let targetHeight = min(640 * zoomValue, visibleFrame.height)
+            let newSize = NSSize(width: targetWidth, height: targetHeight)
             
             // 左上を基準点にするためY座標を調整
-            let newY = currentY + (currentHeight - newSize.height)
-            
-            let newFrame = NSRect(
-                x: currentX,
+            let newY = currentFrame.origin.y + (currentFrame.size.height - newSize.height)
+            var newFrame = NSRect(
+                x: currentFrame.origin.x,
                 y: newY,
                 width: newSize.width,
                 height: newSize.height
             )
             
+            // 画面からはみ出さないよう位置をクランプ
+            let clamp: (CGFloat, CGFloat, CGFloat) -> CGFloat = { value, minVal, maxVal in
+                guard minVal < maxVal else { return minVal }
+                return min(max(value, minVal), maxVal)
+            }
+            
+            let maxX = visibleFrame.maxX - newFrame.size.width
+            let maxY = visibleFrame.maxY - newFrame.size.height
+            newFrame.origin.x = clamp(newFrame.origin.x, visibleFrame.minX, maxX)
+            newFrame.origin.y = clamp(newFrame.origin.y, visibleFrame.minY, maxY)
+            
             // NSAnimationContextを使用してスムーズなアニメーションを実現
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = 0.3
                 context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                self.window.animator().setFrame(newFrame, display: true)
+                window.animator().setFrame(newFrame, display: true)
             }, completionHandler: nil)
         })
         .speechOverlayWindow()        // ← ドラッグなど既存Modifier

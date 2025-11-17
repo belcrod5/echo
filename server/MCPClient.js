@@ -17,10 +17,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import dayjs from "dayjs";
-import { streamText, jsonSchema, tool } from "ai";                 // Vercel AI SDK core
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { google } from "@ai-sdk/google";
-import { createAnthropic } from "@ai-sdk/anthropic";
+import { Codex } from "@openai/codex-sdk";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -35,13 +32,21 @@ dotenv.config();                                   // .env を読み込む
 const SETTINGS_DIR = path.join(__dirname, "settings");
 const DATA_DIR = path.join(__dirname, "data");
 const TOOL_CLIENTS_DIR = path.join(__dirname, "toolClients");
+const CODEX_WORKDIR = path.join(__dirname, "codex_work");
 const DEFAULT_LLM_CONFIG = {
-    provider: "openrouter",
-    model: "gpt-4o",
+    provider: "codex",
+    model: null,
     temperature: 0.7,
     message_limit: 50,
     enable_logging: false,  // ログ出力を有効にするかどうか
     startup_processes: [],  // 起動時に実行するプロセスの配列
+    codex: {
+        sandbox_mode: "workspace-write",
+        approval_policy: "on-request",
+        skip_git_repo_check: true,
+        network_access_enabled: false,
+        web_search_enabled: false,
+    },
 };
 const DEFAULT_SERVER_CONFIGS = [];                // サーバー設定が無ければ起動しない
 
@@ -70,47 +75,6 @@ function writeLogFile(logType, data, enabled = false) {
     }
 }
 
-/** MCP ツール定義 → Vercel AI SDK 用の tool() オブジェクトに変換 */
-function buildAiTools(mcp, rawTools, hooks = {}) {
-    const { onToolStart = () => { }, onToolEnd = () => { } } = hooks;
-    
-    // ignore_list を取得 (設定がない場合は空配列)
-    const ignoreList = mcp.llm_configs?.aiTools?.ignore_list || [];
-    
-    // 無視リストに含まれていないツールのみをフィルタリング
-    const filteredTools = rawTools.filter(tool => !ignoreList.includes(tool.name));
-    
-    console.log(`[MCPClient] Total tools: ${rawTools.length}, Filtered tools: ${filteredTools.length}, Ignored: ${ignoreList.length}`);
-    if (ignoreList.length > 0) {
-        console.log(`[MCPClient] Ignored tools: ${ignoreList.join(', ')}`);
-    }
-    
-    const aiTools = {};
-    for (const t of filteredTools) {
-        aiTools[t.name] = tool({
-            description: t.description ?? "",
-            parameters: jsonSchema({
-                type: "object",
-                properties: t.inputSchema?.properties ?? {},
-                required: t.inputSchema?.required ?? [],
-            }),
-            /** execute(): 該当 MCP クライアントへプロキシ */
-            execute: async (args) => {
-                onToolStart(t.name, args);
-                const client = await mcp.findClientWithTool(t.name);
-                if (!client) throw new Error(`Tool "${t.name}" not found`);
-                const result = await client.callTool({
-                    name: t.name,
-                    arguments: args,
-                });
-                onToolEnd(t.name, args, result);
-                return result;
-            },
-        });
-    }
-    return aiTools;
-}
-
 /*───────────────────────────  MCPClient 本体  ──────────────────────────*/
 class MCPClient {
     constructor() {
@@ -120,6 +84,13 @@ class MCPClient {
     /** @type {Client[]}      */ this.clients = [];
     /** @type {StdioClientTransport[]} */ this.transports = [];
     /** @type {ChildProcess[]} */ this.startupProcesses = [];
+        /** @type {Codex|null} */
+        this.codex = null;
+        /** @type {import("@openai/codex-sdk").Thread|null} */
+        this.codexThread = null;
+        /** @type {import("@openai/codex-sdk").ThreadOptions|null} */
+        this.codexThreadOptions = null;
+        this.codexWorkdir = CODEX_WORKDIR;
     
     
     // 終了時のクリーンアップを確実に実行するためのシグナルハンドラー
@@ -166,6 +137,10 @@ class MCPClient {
             console.warn("[MCPClient] Failed to read llm_configs.json – using defaults:", e.message);
         }
 
+        if (this.llm_configs?.provider && this.llm_configs.provider !== "codex") {
+            console.warn(`[MCPClient] llm_configs.provider="${this.llm_configs.provider}" は現在アーカイブされており Codex クライアントでは無視されます。llm_configs.codex.* を利用してください。`);
+        }
+
         try {
             if (fs.existsSync(serverConfigPath)) {
                 this.server_configs = JSON.parse(fs.readFileSync(serverConfigPath, "utf8"));
@@ -174,28 +149,65 @@ class MCPClient {
             console.warn("[MCPClient] Failed to read server_configs.json – no MCP servers autostarted:", e.message);
         }
 
-        /*----------------  LLM Provider 準備 ----------------*/
-        const { provider, model, temperature } = this.llm_configs;
-        switch (provider) {
-            case "openrouter": {
-                const openrouter = createOpenRouter({ apiKey: process.env.OPENROUTER_API_KEY });
-                this.llm = openrouter.chat(model);
-                break;
+        /*----------------  Codex クライアント準備 ----------------*/
+        const codexConfig = this.llm_configs?.codex ?? {};
+        const userSpecifiedModel = typeof codexConfig.model === "string"
+            ? codexConfig.model.trim()
+            : "";
+        let resolvedModel;
+
+        if (userSpecifiedModel) {
+            if (userSpecifiedModel.includes("/")) {
+                console.warn(`[MCPClient] Codex model "${userSpecifiedModel}" looks provider-qualified. Codex expects bare model IDs (例: "gpt-4.1-mini"). モデル指定を無視します。`);
+            } else {
+                resolvedModel = userSpecifiedModel;
             }
-            case "gemini": {
-                // google() は GOOGLE_GENERATIVE_AI_API_KEY を自動で参照
-                this.llm = google(model);
-                break;
-            }
-            case "claude": {
-                const anthropic = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-                this.llm = anthropic(model);
-                break;
-            }
-            default:
-                throw new Error(`Unknown provider "${provider}" in llm_configs.json`);
+        } else if (this.llm_configs?.model) {
+            console.warn(`[MCPClient] llm_configs.model="${this.llm_configs.model}" は Codex では使用されません。Codex 用のモデルを指定するには llm_configs.codex.model を設定してください。`);
         }
-        this.temperature = temperature ?? 0.7;
+        const sandboxMode = codexConfig.sandbox_mode;
+        const approvalPolicy = codexConfig.approval_policy;
+        const skipGitRepoCheck = codexConfig.skip_git_repo_check;
+        const networkAccessEnabled = codexConfig.network_access_enabled;
+        const webSearchEnabled = codexConfig.web_search_enabled;
+
+        try {
+            if (!fs.existsSync(this.codexWorkdir)) {
+                fs.mkdirSync(this.codexWorkdir, { recursive: true });
+            }
+        } catch (error) {
+            console.error("[MCPClient] Failed to ensure Codex working directory:", error);
+            throw error;
+        }
+
+        this.codex = new Codex();
+        const threadOptions = {
+            workingDirectory: this.codexWorkdir,
+        };
+
+        if (resolvedModel) {
+            threadOptions.model = resolvedModel;
+        }
+        if (typeof sandboxMode === "string") {
+            threadOptions.sandboxMode = sandboxMode;
+        }
+        if (typeof approvalPolicy === "string") {
+            threadOptions.approvalPolicy = approvalPolicy;
+        }
+        if (networkAccessEnabled !== undefined) {
+            threadOptions.networkAccessEnabled = Boolean(networkAccessEnabled);
+        }
+        if (webSearchEnabled !== undefined) {
+            threadOptions.webSearchEnabled = Boolean(webSearchEnabled);
+        }
+        if (skipGitRepoCheck !== undefined) {
+            threadOptions.skipGitRepoCheck = Boolean(skipGitRepoCheck);
+        } else {
+            threadOptions.skipGitRepoCheck = true;
+        }
+
+        this.codexThreadOptions = threadOptions;
+        this.codexThread = this.codex.startThread(threadOptions);
 
         /*----------------  起動時プロセス実行 ----------------*/
         await this.executeStartupProcesses();
@@ -427,102 +439,164 @@ class MCPClient {
         onToken,
         { maxSteps, timeoutSeconds = 300 } = {},
     ) {
-        // If maxSteps is not provided explicitly, fall back to llm_configs.json
-        if (maxSteps === undefined || maxSteps === null) {
-            // 1) Prefer a dedicated top-level "max_steps" key
-            // 2) Fallback to aiTools.max_steps if present
-            // 3) Finally default to 8 (same as before)
-            maxSteps = this.llm_configs?.max_steps
-                ?? this.llm_configs?.aiTools?.max_steps
-                ?? 8;
-        }
-
         this.addMessage({ role: "user", content: query });
 
-        const allTools = await this.listAllTools();
-        const aiTools = buildAiTools(
-            this,
-            allTools,
-            {
-                onToolStart: name => onToken?.(`${name}を開始…`, "tool_start"),
-                onToolEnd: name => onToken?.(`${name} 完了`, "tool_end"),
-            },
-        );
+        // Codex は turn 内で自律的にツールを扱うため maxSteps / timeoutSeconds は現状未使用
+        void maxSteps;
+        void timeoutSeconds;
 
-        // アクティブツール一覧を作成（無視リストでフィルタリング済み）
-        const ignoreList = this.llm_configs?.aiTools?.ignore_list || [];
-        const activeToolNames = allTools
-            .filter(tool => !ignoreList.includes(tool.name))
-            .map(tool => tool.name);
+        writeLogFile("messages", this.messages, this.llm_configs?.enable_logging);
+
+        if (!this.codex) {
+            this.codex = new Codex();
+        }
+
+        if (!this.codexThreadOptions) {
+            this.codexThreadOptions = {
+                workingDirectory: this.codexWorkdir,
+                skipGitRepoCheck: true,
+            };
+        }
+
+        if (!fs.existsSync(this.codexWorkdir)) {
+            fs.mkdirSync(this.codexWorkdir, { recursive: true });
+        }
+
+        if (!this.codexThread) {
+            this.codexThread = this.codex.startThread(this.codexThreadOptions);
+        }
+
+        let buffer = "";
+        let assistantText = "";
+        let totalUsage = null;
+        const delimRe = /[。、！]/u;
+
+        const flushBuffer = () => {
+            while (buffer.length >= 10) {
+                const idx = buffer.slice(10).search(delimRe);
+                if (idx === -1) break;
+                const cut = 10 + idx + 1;
+                const chunk = buffer.slice(0, cut);
+                onToken?.(chunk, "text");
+                console.log(`buffer, [${chunk}]`);
+                buffer = buffer.slice(cut);
+            }
+        };
 
         try {
-            let totalUsage = null;
-            writeLogFile("messages", this.messages, this.llm_configs?.enable_logging);
-            const { textStream, response } = await streamText({
-                model: this.llm,
-                messages: [
-                    {role: "system", content: `現在の時刻: ${dayjs().format("YYYY-MM-DD HH:mm")}`},
-                    {role: "system", content: `短期記憶:\n* ${this.short_memory.join("\n* ")}`},
-                    ...this.messages
-                ],
-                tools: aiTools,
-                temperature: this.temperature,
-                maxSteps,
-                timeoutSeconds,
-                experimental_continueSteps: true,
-                // アクティブなツールのみを指定（無視リストでフィルタリング済み）
-                ...(activeToolNames.length > 0 ? { experimental_activeTools: activeToolNames } : {}),
+            const prompt = this.buildCodexPrompt(query);
+            const { events } = await this.codexThread.runStreamed(prompt);
 
-                onStepFinish: ({ toolCalls }) =>
-                    console.debug(`[MCP] step: toolCalls.length=${toolCalls.length}`),
-
-                // 最終テキストが丸ごと来たときも流す
-                onFinish: ({ usage }) => {
-                    totalUsage = usage; // capture usage stats
-                },
-                system: this.llm_configs?.system_prompt ?? "",
-            });
-
-            /* ── ストリーム受信 → 10文字以上＋句読点で区切って送信 ── */
-            let buffer = "";
-            const delimRe = /[。、！]/u;        // 「！」は全角
-
-            for await (const chunk of textStream) {
-                if (chunk?.length) buffer += chunk;
-
-                while (buffer.length >= 10) {
-                    const idx = buffer.slice(10).search(delimRe); // 10文字以降で区切り文字を探す
-                    if (idx === -1) break;
-
-                    const cut = 10 + idx + 1;                     // 句読点まで含めて送る
-                    onToken?.(buffer.slice(0, cut), "text");
-                    console.log(`buffer, [${buffer.slice(0, cut)}]`);
-                    buffer = buffer.slice(cut);
+            for await (const event of events) {
+                switch (event.type) {
+                    case "item.started": {
+                        const item = event.item;
+                        if (item?.type === "mcp_tool_call") {
+                            onToken?.(`${item.tool}を開始…`, "tool_start");
+                        } else if (item?.type === "command_execution") {
+                            console.log(`[MCPClient] Command started: ${item.command}`);
+                        }
+                        break;
+                    }
+                    case "item.updated": {
+                        const item = event.item;
+                        if (item?.type === "command_execution" && item.aggregated_output) {
+                            console.log(`[MCPClient] Command output (${item.status}): ${item.aggregated_output}`);
+                        }
+                        break;
+                    }
+                    case "item.completed": {
+                        const item = event.item;
+                        if (item?.type === "agent_message") {
+                            const text = item.text ?? "";
+                            assistantText = text;
+                            buffer += text;
+                            flushBuffer();
+                        } else if (item?.type === "mcp_tool_call") {
+                            if (item.status === "completed") {
+                                onToken?.(`${item.tool} 完了`, "tool_end");
+                            } else if (item.status === "failed") {
+                                const errorMsg = item.error?.message
+                                    ? `${item.tool} 失敗: ${item.error.message}`
+                                    : `${item.tool} 失敗`;
+                                console.error(`[MCPClient] MCP tool failed: ${errorMsg}`);
+                                onToken?.(errorMsg, "error");
+                            }
+                        } else if (item?.type === "reasoning") {
+                            console.debug(`[MCPClient] Reasoning: ${item.text}`);
+                        } else if (item?.type === "command_execution") {
+                            console.log(`[MCPClient] Command ${item.status}: ${item.command}`);
+                        } else if (item?.type === "error") {
+                            onToken?.(item.message, "error");
+                        }
+                        break;
+                    }
+                    case "turn.completed": {
+                        totalUsage = event.usage;
+                        break;
+                    }
+                    case "turn.failed": {
+                        const message = event.error?.message ?? "Codex turn failed";
+                        console.error(`[MCPClient] Codex turn failed: ${message}`);
+                        onToken?.(`エラー: ${message}`, "error");
+                        // turn failure invalidates the thread; restart for next call
+                        this.codexThread = this.codex.startThread(this.codexThreadOptions);
+                        break;
+                    }
+                    case "error": {
+                        console.error(`[MCPClient] Codex stream error: ${event.message}`);
+                        onToken?.(`Codexエラー: ${event.message}`, "error");
+                        break;
+                    }
+                    default:
+                        break;
                 }
             }
 
-            // 余りをまとめて送る
             if (buffer.length && !/^\s*$/.test(buffer)) {
                 console.log(`buffer, [${buffer}]`);
                 onToken?.(buffer, "text", totalUsage);
+                buffer = "";
+            } else if (assistantText && onToken) {
+                onToken(assistantText, "text", totalUsage);
             }
 
-            /* ── 会話履歴を更新 ─────────────────────────── */
-            const res = await response;
-            if (res?.messages?.length) {
-                this.addMessage(res.messages);
+            if (assistantText) {
+                this.addMessage({ role: "assistant", content: assistantText });
                 writeLogFile("res-messages", this.messages, this.llm_configs?.enable_logging);
             }
 
-            // メッセージを保存
             this.saveMessages();
-
         } catch (e) {
-            console.error("[MCPClient] streamText() failed:", e);
+            console.error("[MCPClient] Codex run failed:", e);
             writeLogFile("error", e, this.llm_configs?.enable_logging);
-            onToken?.(`エラーが発生しました。`, "error");
+            const message = e?.message ?? "エラーが発生しました。";
+            onToken?.(`エラーが発生しました: ${message}`, "error");
             this.addMessage({ role: "system", content: "エラーが発生しました。" });
+            this.saveMessages();
+            this.codexThread = null;
         }
+    }
+
+    buildCodexPrompt(query) {
+        const parts = [];
+
+        if (this.llm_configs?.system_prompt) {
+            parts.push(this.llm_configs.system_prompt);
+        }
+
+        parts.push(`現在の時刻: ${dayjs().format("YYYY-MM-DD HH:mm")}`);
+
+        if (Array.isArray(this.short_memory) && this.short_memory.length > 0) {
+            parts.push(`短期記憶:\n* ${this.short_memory.join("\n* ")}`);
+        }
+
+        const queryText = typeof query === "string"
+            ? query
+            : JSON.stringify(query, null, 2);
+        parts.push(queryText);
+
+        return parts.filter(Boolean).join("\n\n");
     }
 
     /*────────────────────  メッセージを保存  ──────────────────────────────*/

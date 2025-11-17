@@ -1,11 +1,8 @@
 {
   "type": "module",
   "dependencies": {
-    "@ai-sdk/anthropic": "^1.2.12",
-    "@ai-sdk/google": "^1.2.18",
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "@openrouter/ai-sdk-provider": "^0.4.6",
-    "ai": "^5.0.15",
+    "@openai/codex-sdk": "^0.58.0",
     "dayjs": "^1.11.13",
     "dotenv": "^16.5.0",
     "openai": "^4.26.0",

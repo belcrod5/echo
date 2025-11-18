@@ -44,8 +44,8 @@ const DEFAULT_LLM_CONFIG = {
         sandbox_mode: "workspace-write",
         approval_policy: "on-request",
         skip_git_repo_check: true,
-        network_access_enabled: false,
-        web_search_enabled: false,
+        network_access_enabled: true,
+        web_search_enabled: true,
     },
 };
 const DEFAULT_SERVER_CONFIGS = [];                // サーバー設定が無ければ起動しない

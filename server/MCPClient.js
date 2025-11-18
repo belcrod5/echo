@@ -32,6 +32,7 @@ dotenv.config();                                   // .env を読み込む
 const SETTINGS_DIR = path.join(__dirname, "settings");
 const TOOL_CLIENTS_DIR = path.join(__dirname, "toolClients");
 const CODEX_WORKDIR = path.join(__dirname, "codex_work");
+const RESPONSE_CODEX_WORKDIR = path.join(__dirname, "codex_work_response");
 const DEFAULT_LLM_CONFIG = {
     provider: "codex",
     model: null,
@@ -88,6 +89,12 @@ class MCPClient {
         /** @type {import("@openai/codex-sdk").ThreadOptions|null} */
         this.codexThreadOptions = null;
         this.codexWorkdir = CODEX_WORKDIR;
+        /** @type {Codex|null} */
+        this.responseCodex = null;
+        /** @type {import("@openai/codex-sdk").ThreadOptions|null} */
+        this.responseCodexThreadOptions = null;
+        this.responseCodexWorkdir = RESPONSE_CODEX_WORKDIR;
+        this.responseCodexInFlight = false;
         this.taskCompletionWatcher = null;
         this.taskCompletionNote = null;
         this.pendingTaskCompletionReset = false;
@@ -172,8 +179,10 @@ class MCPClient {
         const webSearchEnabled = codexConfig.web_search_enabled;
 
         try {
-            if (!fs.existsSync(this.codexWorkdir)) {
-                fs.mkdirSync(this.codexWorkdir, { recursive: true });
+            for (const dir of [this.codexWorkdir, this.responseCodexWorkdir]) {
+                if (!fs.existsSync(dir)) {
+                    fs.mkdirSync(dir, { recursive: true });
+                }
             }
         } catch (error) {
             console.error("[MCPClient] Failed to ensure Codex working directory:", error);
@@ -183,6 +192,10 @@ class MCPClient {
         this.setupTaskCompletionWatcher();
 
         this.codex = new Codex();
+        this.responseCodex = new Codex({
+            model: "gpt-5.1-codex-mini",
+            reasoningEffort: "low",
+        });
         const threadOptions = {
             workingDirectory: this.codexWorkdir,
         };
@@ -210,6 +223,10 @@ class MCPClient {
 
         this.codexThreadOptions = threadOptions;
         this.codexThread = this.codex.startThread(threadOptions);
+        this.responseCodexThreadOptions = {
+            workingDirectory: this.responseCodexWorkdir,
+            skipGitRepoCheck: true,
+        };
 
         /*----------------  起動時プロセス実行 ----------------*/
         await this.executeStartupProcesses();
@@ -430,6 +447,8 @@ class MCPClient {
     ) {
         this.isProcessingQuery = true;
 
+        this.launchQuickResponse(query, onToken);
+
         // Codex は turn 内で自律的にツールを扱うため maxSteps / timeoutSeconds は現状未使用
         void maxSteps;
         void timeoutSeconds;
@@ -563,6 +582,56 @@ class MCPClient {
         }
     }
 
+    launchQuickResponse(query, onToken) {
+        if (!this.responseCodex || typeof onToken !== "function") return;
+        if (this.responseCodexInFlight) return;
+
+        this.responseCodexInFlight = true;
+        this.sendResponseCodexPlaceholder(query, onToken)
+            .catch((error) => {
+                console.error("[MCPClient] responseCodex quick reply failed:", error);
+            })
+            .finally(() => {
+                this.responseCodexInFlight = false;
+            });
+    }
+
+    async sendResponseCodexPlaceholder(query, onToken) {
+        if (!this.responseCodex || typeof onToken !== "function") return;
+
+        try {
+            if (!fs.existsSync(this.responseCodexWorkdir)) {
+                fs.mkdirSync(this.responseCodexWorkdir, { recursive: true });
+            }
+
+            const threadOptions = this.responseCodexThreadOptions ?? {
+                workingDirectory: this.responseCodexWorkdir,
+                skipGitRepoCheck: true,
+            };
+            const thread = this.responseCodex.startThread(threadOptions);
+
+            const prompt = this.buildResponseCodexPrompt(query);
+            const turn = await thread.run(prompt);
+            const ackText = typeof turn?.finalResponse === "string"
+                ? turn.finalResponse.trim()
+                : "";
+
+
+            const quickMessage = ackText || this.buildResponseCodexFallback(query);
+            onToken(quickMessage, "text");
+            console.log(`[MCPClient][responseCodex] Quick response sent: ${quickMessage}`);
+        } catch (error) {
+            console.error("[MCPClient] responseCodex quick reply failed:", error);
+            const fallbackMessage = this.buildResponseCodexFallback(query);
+            try {
+                onToken(fallbackMessage, "text");
+                console.log(`[MCPClient][responseCodex] Quick response fallback sent: ${fallbackMessage}`);
+            } catch (emitError) {
+                console.error("[MCPClient] Failed to emit quick response fallback:", emitError);
+            }
+        }
+    }
+
     buildCodexPrompt(query) {
         const parts = [];
         const shouldIncludePrelude = !this.conversationPreludeSent;
@@ -588,6 +657,33 @@ class MCPClient {
         parts.push(queryText);
 
         return parts.filter(Boolean).join("\n\n");
+    }
+
+    buildResponseCodexPrompt(query) {
+        const requestText = typeof query === "string"
+            ? query
+            : JSON.stringify(query, null, 2);
+
+        const instructions = [
+            "あなたはCodexの即時応答係です。",
+            "役割: ユーザーから質問を受けたら、1文だけでフレンドリーな日本語で共感する文章と少し待つように適切な回答を伝える。",
+            "口語的で軽やかなトーンを保ち、質問内容を軽く言い換えて触れる。",
+            "禁止: 実際の回答や結論を出すこと、複数文で答えること、英語で答えること。",
+            `ユーザーの質問: ${requestText}`,
+        ];
+
+        return instructions.join("\n");
+    }
+
+    buildResponseCodexFallback(query) {
+        const text = typeof query === "string"
+            ? query
+            : JSON.stringify(query, null, 2);
+        const normalized = text.replace(/\s+/g, " ").trim();
+        const summary = normalized.length > 20
+            ? `${normalized.slice(0, 20)}…`
+            : normalized || "その件";
+        return `${summary}ちょっと確認するから少し待ってね`;
     }
 
     /*────────────────────  後片付け  ──────────────────────────────────*/

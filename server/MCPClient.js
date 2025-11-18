@@ -30,7 +30,6 @@ const __dirname = path.dirname(__filename);
 dotenv.config();                                   // .env を読み込む
 
 const SETTINGS_DIR = path.join(__dirname, "settings");
-const DATA_DIR = path.join(__dirname, "data");
 const TOOL_CLIENTS_DIR = path.join(__dirname, "toolClients");
 const CODEX_WORKDIR = path.join(__dirname, "codex_work");
 const DEFAULT_LLM_CONFIG = {
@@ -78,8 +77,6 @@ function writeLogFile(logType, data, enabled = false) {
 /*───────────────────────────  MCPClient 本体  ──────────────────────────*/
 class MCPClient {
     constructor() {
-        /** @type {{role:"user"|"assistant"|"tool", content:any}[]} */
-        this.messages = [];
         this.conversationPreludeSent = false;
     /** @type {Client[]}      */ this.clients = [];
     /** @type {StdioClientTransport[]} */ this.transports = [];
@@ -91,13 +88,16 @@ class MCPClient {
         /** @type {import("@openai/codex-sdk").ThreadOptions|null} */
         this.codexThreadOptions = null;
         this.codexWorkdir = CODEX_WORKDIR;
+        this.taskCompletionWatcher = null;
+        this.taskCompletionNote = null;
+        this.pendingTaskCompletionReset = false;
+        this.isHandlingTaskCompletion = false;
+        this.isProcessingQuery = false;
+        this.taskCompletionFilePath = path.join(this.codexWorkdir, "タスク完了.txt");
     
     
     // 終了時のクリーンアップを確実に実行するためのシグナルハンドラー
     this.setupSignalHandlers();
-
-    // メッセージを読み込み
-    this.loadMessages();
     }
     
     setupSignalHandlers() {
@@ -179,6 +179,8 @@ class MCPClient {
             console.error("[MCPClient] Failed to ensure Codex working directory:", error);
             throw error;
         }
+
+        this.setupTaskCompletionWatcher();
 
         this.codex = new Codex();
         const threadOptions = {
@@ -281,6 +283,73 @@ class MCPClient {
         console.log("[MCPClient] All startup processes initiated");
     }
 
+    /*────────────────────  タスク完了ファイル監視  ───────────────────────*/
+    setupTaskCompletionWatcher() {
+        if (this.taskCompletionWatcher) return;
+
+        try {
+            this.taskCompletionWatcher = fs.watch(this.codexWorkdir, (eventType, filename) => {
+                const target = typeof filename === "string" ? filename : filename?.toString?.();
+                if (target === "タスク完了.txt") {
+                    setTimeout(() => this.handleTaskCompletionFile(), 50);
+                }
+            });
+
+            this.taskCompletionWatcher.on("error", (error) => {
+                console.error(`[MCPClient] Task completion watcher error: ${error.message}`);
+                try {
+                    this.taskCompletionWatcher?.close();
+                } catch {/* ignore */}
+                this.taskCompletionWatcher = null;
+            });
+
+            console.log(`[MCPClient] Watching for task completion file: ${this.taskCompletionFilePath}`);
+            this.handleTaskCompletionFile();
+        } catch (error) {
+            console.error("[MCPClient] Failed to setup task completion watcher:", error);
+        }
+    }
+
+    handleTaskCompletionFile() {
+        if (this.isHandlingTaskCompletion) return;
+        this.isHandlingTaskCompletion = true;
+
+        try {
+            if (!fs.existsSync(this.taskCompletionFilePath)) {
+                return;
+            }
+
+            const content = fs.readFileSync(this.taskCompletionFilePath, "utf8").trim();
+            fs.unlinkSync(this.taskCompletionFilePath);
+            console.log(`[MCPClient] Task completion file detected. Summary: ${content || "(empty)"}`);
+
+            this.taskCompletionNote = content;
+            this.pendingTaskCompletionReset = true;
+            if (this.isProcessingQuery) {
+                console.log("[MCPClient] Query in progress; session reset will run after completion.");
+            }
+            this.applyPendingTaskCompletionResetIfNeeded();
+        } catch (error) {
+            console.error("[MCPClient] Failed to handle task completion file:", error);
+        } finally {
+            this.isHandlingTaskCompletion = false;
+        }
+    }
+
+    applyPendingTaskCompletionResetIfNeeded() {
+        if (!this.pendingTaskCompletionReset) return;
+        if (this.isProcessingQuery) return;
+        this.resetConversationForNextSession();
+    }
+
+    resetConversationForNextSession() {
+        this.conversationPreludeSent = false;
+        this.pendingTaskCompletionReset = false;
+        this.codexThread = null;
+
+        console.log("[MCPClient] Session reset. Next query will start from a clean slate with the completion note.");
+    }
+
     /*────────────────────  MCP サーバー起動 & 接続  ─────────────────────*/
     async connectToServers() {
         for (const server of this.server_configs) {
@@ -353,99 +422,17 @@ class MCPClient {
         return null;
     }
 
-    /*────────────────────  送信メッセージ履歴管理  ─────────────────────*/
-    addMessage(arg) {
-        // 追加
-        Array.isArray(arg) ? this.messages.push(...arg) : this.messages.push(arg);
-
-        // ── ツール呼び出しペア判定 ───────────────────
-        const getPairId = (msg) => {
-            if (!Array.isArray(msg?.content)) return null;
-            const entry = msg.content.find(c =>
-                (c.type === "tool-call" || c.type === "tool-result") && c.toolCallId
-            );
-            return entry?.toolCallId ?? null;
-        };
-
-        const limit = this.llm_configs?.message_limit ?? 50;
-        const compLimit = this.llm_configs?.message_compression_limit ?? 0;
-
-        // ── サマリーメッセージを先頭に確保 ────────────
-        const isSummary = m => m?.role === "system"
-            && typeof m.content === "string"
-            && m.content.startsWith("tool-call履歴");
-
-        if (!isSummary(this.messages[0])) {
-            this.messages.unshift({ role: "system", content: "tool-call履歴 {}" });
-        }
-        const summaryMsg = this.messages[0];
-
-        // 既存サマリーを Map に取り込み
-        const summaryMap = new Map();
-        try {
-            const json = JSON.parse(summaryMsg.content.replace(/^tool-call履歴\s*/, ""));
-            Object.entries(json).forEach(([k, v]) => summaryMap.set(k, v));
-        } catch (_) { }
-
-        // ツール情報を Map へ集約
-        const gatherTools = (msg) => {
-            if (!Array.isArray(msg?.content)) return;
-            msg.content.forEach(e => {
-                if (e.toolName && e.args) summaryMap.set(e.toolName, e.args);
-            });
-        };
-
-        // ── message_limit 超過分を削除しつつ要約作成 ──
-        while (this.messages.length > limit) {
-            const first = this.messages[1]; // index 0 はサマリー
-            gatherTools(first);
-
-            const id = getPairId(first);
-            if (id) {
-                const idx = this.messages.findIndex((m, i) => i > 0 && getPairId(m) === id);
-                if (idx !== -1) {
-                    gatherTools(this.messages[idx]);
-                    this.messages.splice(idx, 1);
-                }
-            }
-            this.messages.splice(1, 1);
-        }
-
-        // サマリーメッセージを更新
-        const summaryObj = {};
-        for (const [k, v] of summaryMap) summaryObj[k] = v;
-        summaryMsg.content = `tool-call履歴 ${JSON.stringify(summaryObj)}`;
-
-        // ── 圧縮処理（サマリーは除外） ─────────────────
-        if (this.messages.length - 1 > compLimit && compLimit > 0) {
-            for (let i = 1; i <= compLimit; i++) {
-                const msg = this.messages[i];
-                if (!Array.isArray(msg?.content)) continue;
-
-                msg.content.forEach(p => {
-                    if (p.result?.content && Array.isArray(p.result.content)) {
-                        p.result.content.forEach(r => {
-                            if (r.type === "text") r.text = "compression message";
-                        });
-                    }
-                });
-            }
-        }
-    }
-
     /*─────────────────  ストリーム版クエリ処理（多段ツール自動継続＋文区切り） ───────────────*/
     async processQueryStream(
         query,
         onToken,
         { maxSteps, timeoutSeconds = 300 } = {},
     ) {
-        this.addMessage({ role: "user", content: query });
+        this.isProcessingQuery = true;
 
         // Codex は turn 内で自律的にツールを扱うため maxSteps / timeoutSeconds は現状未使用
         void maxSteps;
         void timeoutSeconds;
-
-        writeLogFile("messages", this.messages, this.llm_configs?.enable_logging);
 
         if (!this.codex) {
             this.codex = new Codex();
@@ -564,20 +551,15 @@ class MCPClient {
                 onToken(assistantText, "text", totalUsage);
             }
 
-            if (assistantText) {
-                this.addMessage({ role: "assistant", content: assistantText });
-                writeLogFile("res-messages", this.messages, this.llm_configs?.enable_logging);
-            }
-
-            this.saveMessages();
         } catch (e) {
             console.error("[MCPClient] Codex run failed:", e);
             writeLogFile("error", e, this.llm_configs?.enable_logging);
             const message = e?.message ?? "エラーが発生しました。";
             onToken?.(`エラーが発生しました: ${message}`, "error");
-            this.addMessage({ role: "system", content: "エラーが発生しました。" });
-            this.saveMessages();
             this.codexThread = null;
+        } finally {
+            this.isProcessingQuery = false;
+            this.applyPendingTaskCompletionResetIfNeeded();
         }
     }
 
@@ -592,6 +574,11 @@ class MCPClient {
 
             parts.push(`現在の時刻: ${dayjs().format("YYYY-MM-DD HH:mm")}`);
 
+            if (this.taskCompletionNote) {
+                parts.push(`タスク引継ぎメモ: ${this.taskCompletionNote}`);
+                this.taskCompletionNote = null;
+            }
+
             this.conversationPreludeSent = true;
         }
 
@@ -603,30 +590,17 @@ class MCPClient {
         return parts.filter(Boolean).join("\n\n");
     }
 
-    /*────────────────────  メッセージを保存  ──────────────────────────────*/
-    saveMessages() {
-        fs.writeFileSync(path.join(DATA_DIR, "messages.json"), JSON.stringify({
-            messages:this.messages,
-            conversationPreludeSent:this.conversationPreludeSent,
-        }, null, 2));
-    }
-
-    /*────────────────────  メッセージを読み込み  ──────────────────────────────*/
-    loadMessages() {
-        if (!fs.existsSync(path.join(DATA_DIR, "messages.json"))) {
-            return;
-        }
-        try {
-            const messages = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "messages.json"), "utf8"));
-            this.messages = Array.isArray(messages.messages) ? messages.messages : [];
-            this.conversationPreludeSent = Boolean(messages.conversationPreludeSent);
-        } catch (e) {
-            console.error("[MCPClient] Failed to load messages:", e);
-        }
-    }
-
     /*────────────────────  後片付け  ──────────────────────────────────*/
     async cleanup() {
+        if (this.taskCompletionWatcher) {
+            console.log("[MCPClient] Closing task completion watcher …");
+            try {
+                this.taskCompletionWatcher.close();
+            } catch (e) {
+                console.error("[MCPClient] Failed to close task completion watcher:", e);
+            }
+            this.taskCompletionWatcher = null;
+        }
         console.log("[MCPClient] Cleaning up transports …");
         for (const transport of this.transports) {
             try {

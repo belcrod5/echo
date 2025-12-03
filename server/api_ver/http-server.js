@@ -8,25 +8,6 @@ import path from 'node:path';
 const client = new MCPClient();
 await client.init();
 
-function normalizeUsage(usage) {
-    if (!usage || typeof usage !== 'object') {
-        return usage ?? null;
-    }
-
-    const alreadyNormalized = ['promptTokens', 'completionTokens', 'totalTokens']
-        .every((key) => Object.prototype.hasOwnProperty.call(usage, key));
-    if (alreadyNormalized) {
-        return usage;
-    }
-
-    const promptTokens = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0)
-        + Number(usage.cached_input_tokens ?? usage.cached_prompt_tokens ?? 0);
-    const completionTokens = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
-    const totalTokens = promptTokens + completionTokens;
-
-    return { promptTokens, completionTokens, totalTokens };
-}
-
 const server = http.createServer(async (req, res) => {
     if (req.method === 'POST') {
         let body = '';
@@ -61,13 +42,12 @@ const server = http.createServer(async (req, res) => {
                     }
                 });
 
-                const formattedUsage = normalizeUsage(totalUsage);
-                res.write(`data: ${JSON.stringify({ ...meta, object: 'chat.completion.chunk', choices: [{ delta: {}, finish_reason: 'stop', index: 0 }], usage: formattedUsage })}\n\n`);
+                res.write(`data: ${JSON.stringify({ ...meta, object: 'chat.completion.chunk', choices: [{ delta: {}, finish_reason: 'stop', index: 0 }], usage: totalUsage })}\n\n`);
                 res.write('data: [DONE]\n\n');
             } catch (error) {
                 console.error("[DEBUG] Error during processQueryStream or SSE writing:", error);
                 try {
-                    const errorChunk = { ...meta, object: 'chat.completion.chunk', choices: [{ delta: { content: `[MCP Error: ${error.message}]` }, finish_reason: 'error', index: 0 }] };
+                    const errorChunk = { ...meta, object: 'chat.completion.chunk', choices: [{ delta: { content: `[MCP Error: ${error.message}]` }, finish_reason: 'error', index: 0 }] }; 
                     res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
                     res.write('data: [DONE]\n\n');
                 } catch (sseError) {
@@ -83,43 +63,17 @@ const server = http.createServer(async (req, res) => {
     }
 });
 
-import { fileURLToPath } from 'url';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 // Determine port from llm_configs.json or environment variable
 function getPort() {
     let port = 3000;
     try {
-        const configsPath = path.join(__dirname, 'settings', 'configs.json');
-        let clientType = 'codex';
-
-        try {
-            if (readFileSync(configsPath, 'utf-8')) {
-                const c = JSON.parse(readFileSync(configsPath, 'utf-8'));
-                if (c.client_type) clientType = c.client_type;
-            }
-        } catch (e) { /* ignore if configs.json missing */ }
-
-        const configFileName = clientType === 'api' ? 'llm_configs_api.json' : 'llm_configs_codex.json';
-        const configPath = path.join(__dirname, 'settings', configFileName);
-
-        let cfg = null;
-        try {
-            cfg = JSON.parse(readFileSync(configPath, 'utf-8'));
-        } catch (e) {
-            // Fallback to llm_configs.json
-            try {
-                const fallbackPath = path.join(__dirname, 'settings', 'llm_configs.json');
-                cfg = JSON.parse(readFileSync(fallbackPath, 'utf-8'));
-            } catch (e2) { /* ignore */ }
-        }
-
-        if (cfg && typeof cfg.port === 'number') {
+        const configPath = path.resolve('./settings/llm_configs.json');
+        const cfg = JSON.parse(readFileSync(configPath, 'utf-8'));
+        if (typeof cfg.port === 'number') {
             port = cfg.port;
         }
     } catch (err) {
-        console.warn('[HTTP] Unable to read port from settings:', err.message);
+        console.warn('[HTTP] Unable to read port from settings/llm_configs.json:', err.message);
     }
 
     if (process.env.PORT) {

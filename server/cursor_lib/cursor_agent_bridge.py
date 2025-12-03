@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 
 
 def log(*args):
@@ -16,7 +17,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--chat-id")
     args = parser.parse_args()
+
+    chat_id = args.chat_id or os.environ.get("CHAT_ID")
+    if not chat_id:
+        chat_id = f"chat_id_{int(time.time())}"
 
     cmd = [
         "cursor-agent",
@@ -28,9 +34,12 @@ def main():
         "--force",
         "--model",
         args.model,
+        "--resume",
+        chat_id,
     ]
 
     env = os.environ.copy()
+    env["CHAT_ID"] = chat_id
 
     proc = subprocess.Popen(
         cmd,

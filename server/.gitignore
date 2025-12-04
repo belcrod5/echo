@@ -4,6 +4,6 @@ data/
 server/
 
 # Local secret configs
-settings/llm_configs.json
-settings/server_configs.json
+settings/*
 .env
+cursor_work/

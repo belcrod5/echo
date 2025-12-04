@@ -25,7 +25,7 @@ def main():
         chat_id = f"chat_id_{int(time.time())}"
 
     cmd = [
-        "cursor-agent",
+        "/opt/homebrew/bin/cursor-agent",
         "-p",
         args.prompt,
         "--output-format",

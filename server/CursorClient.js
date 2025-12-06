@@ -23,9 +23,6 @@ const CURSOR_MCP_CONFIG_PATH = path.join(CURSOR_CONFIG_DIR, "mcp.json");
 const CURSOR_LIB_DIR = path.join(__dirname, "cursor_lib");
 const CURSOR_BRIDGE_SCRIPT_PATH = path.join(CURSOR_LIB_DIR, "cursor_agent_bridge.py");
 const CURSOR_CHAT_ID_PATH = path.join(CURSOR_WORKDIR, "chat_id.txt");
-const debugBridgeLog = (...args) => {
-    console.log("[CursorClient][bridge-debug]", ...args);
-};
 const DEFAULT_LLM_CONFIG = {
     model: "gpt-4.1-mini",
     system_prompt: "",
@@ -377,7 +374,6 @@ class CursorClient {
         const prompt = this.buildCursorPrompt(query);
         const model = this.llm_configs?.model ?? DEFAULT_LLM_CONFIG.model;
         const chatId = this.ensureChatId();
-        debugBridgeLog("processQueryStream start", { chatId, model, promptLength: prompt.length });
         writeLogFile("cursor-args", { model, prompt }, this.llm_configs?.enable_logging);
 
         let buffer = "";
@@ -431,7 +427,6 @@ class CursorClient {
             child.on("close", (code) => {
                 this.cursorProcess = null;
                 flushBuffer(true);
-                debugBridgeLog("processQueryStream child closed", { code });
                 if (code !== 0) {
                     const message = `cursor-agent bridge exited with code ${code}`;
                     console.error(`[CursorClient] ${message}`);
@@ -589,8 +584,6 @@ class CursorClient {
             chatId,
         ];
 
-        debugBridgeLog("spawning cursor_agent_bridge.py", { chatId, model, promptLength: prompt.length });
-
         const child = spawn("python3", args, {
             cwd: CURSOR_WORKDIR,
             stdio: ["ignore", "pipe", "pipe"],
@@ -620,7 +613,6 @@ class CursorClient {
             if (state.buffer.length) {
                 this.handleCursorBridgeStdout("\n", state, onAssistant);
             }
-            debugBridgeLog("cursor_agent_bridge.py closed");
         });
 
         return child;
@@ -635,13 +627,11 @@ class CursorClient {
             const line = state.buffer.slice(0, idx).trim();
             state.buffer = state.buffer.slice(idx + 1);
             if (!line) continue;
-            debugBridgeLog("raw line from bridge", line);
 
             let msg;
             try {
                 msg = JSON.parse(line);
             } catch (error) {
-                debugBridgeLog("failed to parse line", { line, error: error?.message });
                 continue;
             }
 
@@ -656,7 +646,6 @@ class CursorClient {
             }
 
             if (msg?.type !== "assistant") {
-                debugBridgeLog("skip non-assistant message", msg?.type);
                 continue;
             }
 
@@ -681,21 +670,16 @@ class CursorClient {
                 // This handles the case where cursor-agent sends the full text at the end.
                 const delta = text.slice(acc.length);
                 if (delta) {
-                    debugBridgeLog("emit assistant delta (cumulative)", { sessionId, deltaLength: delta.length });
                     onAssistant?.(delta, msg);
                     state.lastAssistantTextBySession.set(sessionId, text);
-                } else {
-                    debugBridgeLog("dedupe assistant text (identical cumulative)", { sessionId });
                 }
             } else if (acc.endsWith(text)) {
                 // Case 3: New text is a suffix of accumulated text (duplicate)
                 // This handles the case where cursor-agent sends a partial full text (e.g. after tool execution)
                 // that is already contained in the accumulated text.
-                debugBridgeLog("dedupe assistant text (suffix)", { sessionId, textLength: text.length });
             } else {
                 // Case 2: New text is a chunk (does not start with acc)
                 // This handles the streaming chunks.
-                debugBridgeLog("emit assistant chunk", { sessionId, chunkLength: text.length });
                 onAssistant?.(text, msg);
                 state.lastAssistantTextBySession.set(sessionId, acc + text);
             }

@@ -18,12 +18,14 @@ const SETTINGS_DIR = path.join(__dirname, "settings");
 const TOOL_CLIENTS_DIR = path.join(__dirname, "toolClients");
 const CURSOR_WORKDIR = path.join(__dirname, "cursor_work");
 const CURSOR_CONFIG_DIR = path.join(CURSOR_WORKDIR, ".cursor");
-const CURSOR_RULES_DIR = path.join(CURSOR_CONFIG_DIR, "rules");
-const CURSOR_RULE_PATH = path.join(CURSOR_RULES_DIR, "base.mdc");
+const CURSOR_RULE_PATH = path.join(CURSOR_WORKDIR, ".cursorrules");
 const CURSOR_MCP_CONFIG_PATH = path.join(CURSOR_CONFIG_DIR, "mcp.json");
 const CURSOR_LIB_DIR = path.join(__dirname, "cursor_lib");
 const CURSOR_BRIDGE_SCRIPT_PATH = path.join(CURSOR_LIB_DIR, "cursor_agent_bridge.py");
 const CURSOR_CHAT_ID_PATH = path.join(CURSOR_WORKDIR, "chat_id.txt");
+const debugBridgeLog = (...args) => {
+    console.log("[CursorClient][bridge-debug]", ...args);
+};
 const DEFAULT_LLM_CONFIG = {
     model: "gpt-4.1-mini",
     system_prompt: "",
@@ -133,7 +135,7 @@ class CursorClient {
 
     async prepareCursorWorkspace() {
         try {
-            for (const dir of [CURSOR_WORKDIR, CURSOR_CONFIG_DIR, CURSOR_RULES_DIR]) {
+            for (const dir of [CURSOR_WORKDIR, CURSOR_CONFIG_DIR]) {
                 if (!fs.existsSync(dir)) {
                     fs.mkdirSync(dir, { recursive: true });
                 }
@@ -247,29 +249,29 @@ class CursorClient {
 
                 this.startupProcesses.push(childProcess);
 
-                childProcess.stdout?.on("data", (data) => {
-                    console.log(`[Process ${childProcess.pid}] ${data.toString().trim()}`);
-                });
+                // childProcess.stdout?.on("data", (data) => {
+                //     console.log(`[Process ${childProcess.pid}] ${data.toString().trim()}`);
+                // });
 
-                childProcess.stderr?.on("data", (data) => {
-                    console.error(`[Process ${childProcess.pid}] ERROR: ${data.toString().trim()}`);
-                });
+                // childProcess.stderr?.on("data", (data) => {
+                //     console.error(`[Process ${childProcess.pid}] ERROR: ${data.toString().trim()}`);
+                // });
 
-                childProcess.on("error", (error) => {
-                    console.error(`[CursorClient] Failed to start process "${processCommand}":`, error.message);
-                });
+                // childProcess.on("error", (error) => {
+                //     console.error(`[CursorClient] Failed to start process "${processCommand}":`, error.message);
+                // });
 
-                childProcess.on("exit", (code, signal) => {
-                    if (code !== null) {
-                        console.log(`[Process ${childProcess.pid}] Exited with code ${code}`);
-                    } else if (signal !== null) {
-                        console.log(`[Process ${childProcess.pid}] Killed with signal ${signal}`);
-                    }
-                    const index = this.startupProcesses.indexOf(childProcess);
-                    if (index > -1) {
-                        this.startupProcesses.splice(index, 1);
-                    }
-                });
+                // childProcess.on("exit", (code, signal) => {
+                //     if (code !== null) {
+                //         console.log(`[Process ${childProcess.pid}] Exited with code ${code}`);
+                //     } else if (signal !== null) {
+                //         console.log(`[Process ${childProcess.pid}] Killed with signal ${signal}`);
+                //     }
+                //     const index = this.startupProcesses.indexOf(childProcess);
+                //     if (index > -1) {
+                //         this.startupProcesses.splice(index, 1);
+                //     }
+                // });
 
                 console.log(`[CursorClient] Started process with PID: ${childProcess.pid}`);
             } catch (error) {
@@ -375,6 +377,7 @@ class CursorClient {
         const prompt = this.buildCursorPrompt(query);
         const model = this.llm_configs?.model ?? DEFAULT_LLM_CONFIG.model;
         const chatId = this.ensureChatId();
+        debugBridgeLog("processQueryStream start", { chatId, model, promptLength: prompt.length });
         writeLogFile("cursor-args", { model, prompt }, this.llm_configs?.enable_logging);
 
         let buffer = "";
@@ -399,7 +402,12 @@ class CursorClient {
         return await new Promise((resolve, reject) => {
             let child;
             try {
-                child = this.startCursorBridgeProcess(prompt, model, chatId, (text) => {
+                child = this.startCursorBridgeProcess(prompt, model, chatId, (text, msg) => {
+                    if (msg?._customType) {
+                        flushBuffer(true);
+                        onToken?.(text, msg._customType);
+                        return;
+                    }
                     if (!text) return;
                     buffer += text;
                     flushBuffer();
@@ -423,6 +431,7 @@ class CursorClient {
             child.on("close", (code) => {
                 this.cursorProcess = null;
                 flushBuffer(true);
+                debugBridgeLog("processQueryStream child closed", { code });
                 if (code !== 0) {
                     const message = `cursor-agent bridge exited with code ${code}`;
                     console.error(`[CursorClient] ${message}`);
@@ -580,6 +589,8 @@ class CursorClient {
             chatId,
         ];
 
+        debugBridgeLog("spawning cursor_agent_bridge.py", { chatId, model, promptLength: prompt.length });
+
         const child = spawn("python3", args, {
             cwd: CURSOR_WORKDIR,
             stdio: ["ignore", "pipe", "pipe"],
@@ -609,6 +620,7 @@ class CursorClient {
             if (state.buffer.length) {
                 this.handleCursorBridgeStdout("\n", state, onAssistant);
             }
+            debugBridgeLog("cursor_agent_bridge.py closed");
         });
 
         return child;
@@ -623,15 +635,28 @@ class CursorClient {
             const line = state.buffer.slice(0, idx).trim();
             state.buffer = state.buffer.slice(idx + 1);
             if (!line) continue;
+            debugBridgeLog("raw line from bridge", line);
 
             let msg;
             try {
                 msg = JSON.parse(line);
-            } catch {
+            } catch (error) {
+                debugBridgeLog("failed to parse line", { line, error: error?.message });
+                continue;
+            }
+
+            if (msg?.type === "tool_call") {
+                const toolName = msg.tool_call?.mcpToolCall?.args?.toolName || "unknown_tool";
+                if (msg.subtype === "started") {
+                    onAssistant?.(`${toolName}を開始…`, { ...msg, _customType: "tool_start" });
+                } else if (msg.subtype === "completed") {
+                    onAssistant?.(`${toolName} 完了`, { ...msg, _customType: "tool_end" });
+                }
                 continue;
             }
 
             if (msg?.type !== "assistant") {
+                debugBridgeLog("skip non-assistant message", msg?.type);
                 continue;
             }
 
@@ -644,18 +669,36 @@ class CursorClient {
                 .map((p) => p.text)
                 .join("");
 
-            const trimmed = text.trim();
-            if (!trimmed) {
+            if (!text) {
                 continue;
             }
 
-            const prev = state.lastAssistantTextBySession.get(sessionId);
-            if (prev === text) {
-                continue;
-            }
+            // state.lastAssistantTextBySession holds the ACCUMULATED text so far.
+            const acc = state.lastAssistantTextBySession.get(sessionId) || "";
 
-            state.lastAssistantTextBySession.set(sessionId, text);
-            onAssistant?.(text, msg);
+            if (text.startsWith(acc)) {
+                // Case 1: New text is a cumulative update (starts with what we already have)
+                // This handles the case where cursor-agent sends the full text at the end.
+                const delta = text.slice(acc.length);
+                if (delta) {
+                    debugBridgeLog("emit assistant delta (cumulative)", { sessionId, deltaLength: delta.length });
+                    onAssistant?.(delta, msg);
+                    state.lastAssistantTextBySession.set(sessionId, text);
+                } else {
+                    debugBridgeLog("dedupe assistant text (identical cumulative)", { sessionId });
+                }
+            } else if (acc.endsWith(text)) {
+                // Case 3: New text is a suffix of accumulated text (duplicate)
+                // This handles the case where cursor-agent sends a partial full text (e.g. after tool execution)
+                // that is already contained in the accumulated text.
+                debugBridgeLog("dedupe assistant text (suffix)", { sessionId, textLength: text.length });
+            } else {
+                // Case 2: New text is a chunk (does not start with acc)
+                // This handles the streaming chunks.
+                debugBridgeLog("emit assistant chunk", { sessionId, chunkLength: text.length });
+                onAssistant?.(text, msg);
+                state.lastAssistantTextBySession.set(sessionId, acc + text);
+            }
         }
     }
 }

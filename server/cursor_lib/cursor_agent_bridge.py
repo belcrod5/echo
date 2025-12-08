@@ -21,8 +21,12 @@ def main():
     args = parser.parse_args()
 
     chat_id = args.chat_id or os.environ.get("CHAT_ID")
+    session_file_path = os.path.join(os.getcwd(), ".cursor_session_id")
+
     if not chat_id:
-        chat_id = f"chat_id_{int(time.time())}"
+        if os.path.exists(session_file_path):
+            with open(session_file_path, "r", encoding="utf-8") as f:
+                chat_id = f.read().strip()
 
     cmd = [
         "/opt/homebrew/bin/cursor-agent",
@@ -34,12 +38,14 @@ def main():
         "--force",
         "--model",
         args.model,
-        "--resume",
-        chat_id,
     ]
 
+    if chat_id:
+        cmd.extend(["--resume", chat_id])
+
     env = os.environ.copy()
-    env["CHAT_ID"] = chat_id
+    if chat_id:
+        env["CHAT_ID"] = chat_id
 
     proc = subprocess.Popen(
         cmd,
@@ -65,6 +71,18 @@ def main():
         line = line.strip()
         if not line:
             continue
+        
+        try:
+            data = json.loads(line)
+            if "session_id" in data:
+                new_session_id = data["session_id"]
+                if new_session_id and new_session_id != chat_id:
+                    chat_id = new_session_id
+                    with open(session_file_path, "w", encoding="utf-8") as f:
+                        f.write(chat_id)
+        except json.JSONDecodeError:
+            pass
+
         print(line, flush=True)
 
     proc.wait()

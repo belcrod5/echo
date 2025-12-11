@@ -5,3 +5,7 @@
 *.swp
 .idea/
 .vscode/
+
+# Node / npm artifacts
+**/node_modules/
+**/.npm-cache/

@@ -22,7 +22,6 @@ const CURSOR_RULE_PATH = path.join(CURSOR_WORKDIR, ".cursorrules");
 const CURSOR_MCP_CONFIG_PATH = path.join(CURSOR_CONFIG_DIR, "mcp.json");
 const CURSOR_LIB_DIR = path.join(__dirname, "cursor_lib");
 const CURSOR_BRIDGE_SCRIPT_PATH = path.join(CURSOR_LIB_DIR, "cursor_agent_bridge.py");
-const CURSOR_CHAT_ID_PATH = path.join(CURSOR_WORKDIR, "chat_id.txt");
 const DEFAULT_LLM_CONFIG = {
     model: "gpt-4.1-mini",
     system_prompt: "",
@@ -68,8 +67,6 @@ class CursorClient {
         this.pendingTaskCompletionReset = false;
         this.isHandlingTaskCompletion = false;
         this.taskCompletionFilePath = path.join(CURSOR_WORKDIR, "タスク完了.txt");
-        this.chatIdPath = CURSOR_CHAT_ID_PATH;
-        this.chatId = null;
 
         this.setupSignalHandlers();
     }
@@ -144,7 +141,6 @@ class CursorClient {
 
         this.writeSystemPromptFile();
         this.writeMcpConfig();
-        this.ensureChatId();
     }
 
     writeSystemPromptFile() {
@@ -195,38 +191,6 @@ class CursorClient {
         } catch (error) {
             console.error("[CursorClient] Failed to write MCP config:", error);
         }
-    }
-
-    ensureChatId() {
-        if (this.chatId) {
-            return this.chatId;
-        }
-
-        try {
-            if (fs.existsSync(this.chatIdPath)) {
-                const stored = fs.readFileSync(this.chatIdPath, "utf8").trim();
-                if (stored) {
-                    this.chatId = stored;
-                    return stored;
-                }
-            }
-        } catch (error) {
-            console.error(`[CursorClient] Failed to read chat id: ${error.message}`);
-        }
-
-        return this.rotateChatId();
-    }
-
-    rotateChatId() {
-        const newId = `chat_id_${Math.floor(Date.now() / 1000)}`;
-        try {
-            fs.writeFileSync(this.chatIdPath, newId, "utf8");
-        } catch (error) {
-            console.error(`[CursorClient] Failed to persist chat id "${newId}": ${error.message}`);
-        }
-        this.chatId = newId;
-        console.log(`[CursorClient] Chat session ID updated: ${newId}`);
-        return newId;
     }
 
     async executeStartupProcesses() {
@@ -342,9 +306,7 @@ class CursorClient {
     resetConversationForNextSession() {
         this.conversationPreludeSent = false;
         this.pendingTaskCompletionReset = false;
-        const newChatId = this.rotateChatId();
         console.log("[CursorClient] Session reset. Next query will start from a clean slate with the completion note.");
-        console.log(`[CursorClient] Next session will use chat id: ${newChatId}`);
     }
 
     buildCursorPrompt(query) {
@@ -373,7 +335,6 @@ class CursorClient {
 
         const prompt = this.buildCursorPrompt(query);
         const model = this.llm_configs?.model ?? DEFAULT_LLM_CONFIG.model;
-        const chatId = this.ensureChatId();
         writeLogFile("cursor-args", { model, prompt }, this.llm_configs?.enable_logging);
 
         let buffer = "";
@@ -398,7 +359,7 @@ class CursorClient {
         return await new Promise((resolve, reject) => {
             let child;
             try {
-                child = this.startCursorBridgeProcess(prompt, model, chatId, (text, msg) => {
+                child = this.startCursorBridgeProcess(prompt, model, (text, msg) => {
                     if (msg?._customType) {
                         flushBuffer(true);
                         onToken?.(text, msg._customType);
@@ -566,12 +527,9 @@ class CursorClient {
         }
     }
 
-    startCursorBridgeProcess(prompt, model, chatId, onAssistant) {
+    startCursorBridgeProcess(prompt, model, onAssistant) {
         if (!prompt) {
             throw new Error("Prompt is required for cursor-agent bridge");
-        }
-        if (!chatId) {
-            throw new Error("Chat ID is required for cursor-agent bridge");
         }
         const args = [
             "-u",
@@ -580,8 +538,6 @@ class CursorClient {
             prompt,
             "--model",
             model,
-            "--chat-id",
-            chatId,
         ];
 
         const child = spawn("python3", args, {

@@ -1,3 +1,6 @@
 {
-    "client_type": "cursor"
+    "client_type": [
+        "chatgpt-web",
+        "cursor"
+    ]
 }

@@ -14,6 +14,7 @@ final class StreamViewModel: ObservableObject {
             req.httpMethod = "POST"
             req.setValue("text/plain; charset=utf-8", forHTTPHeaderField: "Content-Type")
             req.httpBody = msg.data(using: .utf8)
+            req.timeoutInterval = 0   // 0 = no timeout (effectively unlimited)
 
             do {
                 let (bytes, _) = try await URLSession.shared.bytes(for: req)

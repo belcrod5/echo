@@ -38,14 +38,69 @@ const server = http.createServer(async (req, res) => {
         req.on('end', async () => {
             console.log('Received message:', body);
 
+            const parsedBody = (() => {
+                try {
+                    return body ? JSON.parse(body) : null;
+                } catch {
+                    return null;
+                }
+            })();
+
+            const changeClientRequested = parsedBody && (parsedBody.command === 'change-client' || parsedBody.action === 'change-client');
+            const requestedClientType = parsedBody?.args?.type ?? parsedBody?.type ?? null;
+
+            const sendSseHeaders = () => {
+                res.writeHead(200, {
+                    'Content-Type': 'text/event-stream',
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'X-Accel-Buffering': 'no'
+                });
+            };
+
+            const meta = { id: `chatcmpl-${randomUUID()}`, created: Date.now() / 1000 | 0, model: 'mcp-stream-0.1' };
+
+            const handleChangeClient = () => {
+                sendSseHeaders();
+                res.write(`data: ${JSON.stringify({ ...meta, object: 'chat.completion.chunk', choices: [{ delta: { role: 'assistant' }, index: 0 }] })}\n\n`);
+
+                try {
+                    if (!requestedClientType) {
+                        throw new Error('Missing client type in args.type');
+                    }
+                    const newType = client.changeClient(requestedClientType);
+                    const chunk = {
+                        ...meta,
+                        object: 'chat.completion.chunk',
+                        choices: [{ delta: { content: `[Switched client to "${newType}"]`, type: 'system' }, index: 0 }]
+                    };
+                    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                    res.write(`data: ${JSON.stringify({ ...meta, object: 'chat.completion.chunk', choices: [{ delta: {}, finish_reason: 'stop', index: 0 }] })}\n\n`);
+                    res.write('data: [DONE]\n\n');
+                } catch (error) {
+                    console.error("[DEBUG] Error while changing client:", error);
+                    try {
+                        const errorChunk = { ...meta, object: 'chat.completion.chunk', choices: [{ delta: { content: `[Change Client Error: ${error.message}]` }, finish_reason: 'error', index: 0 }] };
+                        res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
+                        res.write('data: [DONE]\n\n');
+                    } catch (sseError) {
+                        console.error("[DEBUG] Error sending SSE change-client error chunk:", sseError);
+                    }
+                } finally {
+                    res.end();
+                }
+            };
+
+            if (changeClientRequested) {
+                return handleChangeClient();
+            }
+
             res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
                 'X-Accel-Buffering': 'no'
             });
-
-            const meta = { id: `chatcmpl-${randomUUID()}`, created: Date.now() / 1000 | 0, model: 'mcp-stream-0.1' };
 
             res.write(`data: ${JSON.stringify({ ...meta, object: 'chat.completion.chunk', choices: [{ delta: { role: 'assistant' }, index: 0 }] })}\n\n`);
 
@@ -97,7 +152,14 @@ function getPort() {
         try {
             if (readFileSync(configsPath, 'utf-8')) {
                 const c = JSON.parse(readFileSync(configsPath, 'utf-8'));
-                if (c.client_type) clientType = c.client_type;
+                if (c.client_type) {
+                    const configured = Array.isArray(c.client_type)
+                        ? c.client_type
+                        : [c.client_type];
+                    if (configured.length > 0 && typeof configured[0] === 'string') {
+                        clientType = configured[0];
+                    }
+                }
             }
         } catch (e) { /* ignore if configs.json missing */ }
 

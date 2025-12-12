@@ -254,10 +254,13 @@ class ChatGPTWebClient {
                 stopButtonSeen = true;
             }
 
+            // Allow a short grace period after the stop button disappears so we don't
+            // drop trailing characters that arrive just after streaming finishes.
+            const inactivityLimitMs = stopButtonSeen ? 1500 : 3000;
             const shouldContinue =
                 hasStop ||
                 (!stopButtonSeen && isPlaceholderText(effectiveText) && Date.now() - startTime < placeholderGraceMs) ||
-                (!stopButtonSeen && !isPlaceholderText(effectiveText) && Date.now() - lastChangeTime < 3000);
+                Date.now() - lastChangeTime < inactivityLimitMs;
 
             if (!shouldContinue) {
                 keepStreaming = false;

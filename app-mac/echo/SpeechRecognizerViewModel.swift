@@ -54,7 +54,8 @@ final class SpeechRecognizerViewModel: NSObject, ObservableObject, SFSpeechRecog
     private var confirmPhrase: String { Self.loadPhrase(forKey: "ConfirmPhrase", defaultValue: "確定") }
     private var cancelPhrase:  String { Self.loadPhrase(forKey: "CancelPhrase",  defaultValue: "キャンセル") }
     private var readbackPhrase:String { Self.loadPhrase(forKey: "ReadbackPhrase",defaultValue: "確認") }
-    private var exitPhrase:   String { Self.loadPhrase(forKey: "ExitPhrase",   defaultValue: "終了") }
+    // 設定画面のデフォルトと揃える（以前は "終了" で即終了してしまっていた）
+    private var exitPhrase:   String { Self.loadPhrase(forKey: "ExitPhrase",   defaultValue: "アプリケーション終了") }
 
     private static func loadPhrase(forKey key: String, defaultValue: String) -> String {
         let raw = UserDefaults.standard.string(forKey: key) ?? defaultValue

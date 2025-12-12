@@ -67,6 +67,7 @@ class CursorClient {
         this.pendingTaskCompletionReset = false;
         this.isHandlingTaskCompletion = false;
         this.taskCompletionFilePath = path.join(CURSOR_WORKDIR, "タスク完了.txt");
+        this.resetCursorSessionForNextQuery = false;
 
         this.setupSignalHandlers();
     }
@@ -306,6 +307,7 @@ class CursorClient {
     resetConversationForNextSession() {
         this.conversationPreludeSent = false;
         this.pendingTaskCompletionReset = false;
+        this.resetCursorSessionForNextQuery = true;
         console.log("[CursorClient] Session reset. Next query will start from a clean slate with the completion note.");
     }
 
@@ -540,6 +542,11 @@ class CursorClient {
             model,
         ];
 
+        const shouldResetCursorSession = this.resetCursorSessionForNextQuery;
+        if (shouldResetCursorSession) {
+            args.push("--reset-session");
+        }
+
         const child = spawn("python3", args, {
             cwd: CURSOR_WORKDIR,
             stdio: ["ignore", "pipe", "pipe"],
@@ -547,6 +554,10 @@ class CursorClient {
                 ...process.env,
             },
         });
+
+        if (shouldResetCursorSession) {
+            this.resetCursorSessionForNextQuery = false;
+        }
 
         const state = {
             buffer: "",

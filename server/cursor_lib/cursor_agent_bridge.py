@@ -18,10 +18,25 @@ def main():
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--chat-id")
+    parser.add_argument(
+        "--reset-session",
+        action="store_true",
+        help="Reset chat session and remove persisted session id.",
+    )
     args = parser.parse_args()
 
-    chat_id = args.chat_id or os.environ.get("CHAT_ID")
     session_file_path = os.path.join(os.getcwd(), ".cursor_session_id")
+
+    chat_id = args.chat_id or os.environ.get("CHAT_ID")
+
+    if args.reset_session:
+        chat_id = None
+        try:
+            if os.path.exists(session_file_path):
+                os.remove(session_file_path)
+        except OSError:
+            # Best-effort cleanup; continue even if removal fails.
+            pass
 
     if not chat_id:
         if os.path.exists(session_file_path):
@@ -44,6 +59,8 @@ def main():
         cmd.extend(["--resume", chat_id])
 
     env = os.environ.copy()
+    if args.reset_session:
+        env.pop("CHAT_ID", None)
     if chat_id:
         env["CHAT_ID"] = chat_id
 

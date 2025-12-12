@@ -188,6 +188,25 @@ class ChatGPTWebClient {
         const placeholderGraceMs = 15000;
         const startTime = Date.now();
 
+        const streamDebug = process.env.CHATGPT_WEB_STREAM_DEBUG === "1";
+        const holdBackChars = Math.max(0, Number(process.env.CHATGPT_WEB_STREAM_HOLDBACK ?? 32));
+        const dbg = (...args) => {
+            if (!streamDebug) return;
+            console.log("[ChatGPTWebClient:streamAssistantResponse]", ...args);
+        };
+        const commonPrefixLen = (a, b) => {
+            const max = Math.min(a.length, b.length);
+            let i = 0;
+            while (i < max && a.charCodeAt(i) === b.charCodeAt(i)) i++;
+            return i;
+        };
+        const extractControlTail = (text) => {
+            const idx = text.lastIndexOf("{{!");
+            if (idx === -1) return null;
+            const end = Math.min(text.length, idx + 160);
+            return text.slice(idx, end).replace(/\n/g, "\\n");
+        };
+
         const flushBuffer = () => {
             while (buffer.length >= 10) {
                 const idx = buffer.slice(10).search(delimRe);
@@ -219,7 +238,8 @@ class ChatGPTWebClient {
             // Stop button might disappear quickly; continue streaming regardless.
         }
 
-        let lastText = "";
+        let prevSnapshot = "";
+        let committedLen = 0;
         let keepStreaming = true;
         let stopButtonSeen = false;
         let lastChangeTime = Date.now();
@@ -237,18 +257,53 @@ class ChatGPTWebClient {
                 effectiveText = effectiveText.slice(previousLastText.length);
             }
 
-            if (effectiveText.length > lastText.length) {
-                const newContent = effectiveText.substring(lastText.length);
-                const placeholderOnly = !stopButtonSeen && isPlaceholderText(effectiveText);
-
-                if (!placeholderOnly || Date.now() - startTime > placeholderGraceMs) {
-                    buffer += newContent;
-                    accumulatedText += newContent;
-                    flushBuffer();
-                }
-                lastText = effectiveText;
-                lastChangeTime = Date.now();
+            const now = Date.now();
+            const snapshotChanged = effectiveText !== prevSnapshot;
+            if (snapshotChanged) {
+                lastChangeTime = now;
             }
+
+            const placeholderOnly = !stopButtonSeen && isPlaceholderText(effectiveText);
+            const allowOutput = !placeholderOnly || now - startTime > placeholderGraceMs;
+
+            // IMPORTANT:
+            // ChatGPT Web UI may rewrite already-rendered text (e.g., markdown reflow or
+            // replacing placeholder glyphs) without increasing the total length.
+            // The old "length-only append" diff would miss such in-place edits and
+            // permanently stream the wrong characters. We therefore:
+            // - only stream content that stayed the same across two consecutive snapshots
+            // - and keep a tail hold-back to avoid emitting unstable trailing characters.
+            const stablePrefix = commonPrefixLen(prevSnapshot, effectiveText);
+            const maxEmitLen = Math.max(0, effectiveText.length - holdBackChars);
+            const emitUntil = Math.min(stablePrefix, maxEmitLen);
+
+            if (streamDebug && snapshotChanged) {
+                const prevTail = extractControlTail(prevSnapshot);
+                const currTail = extractControlTail(effectiveText);
+                if (prevTail || currTail) {
+                    const append = !prevSnapshot || effectiveText.startsWith(prevSnapshot);
+                    dbg(
+                        `upd hasStop=${hasStop} stopSeen=${stopButtonSeen} allowOut=${allowOutput} prevLen=${prevSnapshot.length} currLen=${effectiveText.length} stablePrefix=${stablePrefix} emitUntil=${emitUntil} committed=${committedLen} append=${append}`,
+                        { prevTail, currTail },
+                    );
+                } else if (prevSnapshot && effectiveText.length === prevSnapshot.length && effectiveText !== prevSnapshot) {
+                    // In-place rewrite detected (same length, different content).
+                    const d = stablePrefix;
+                    const a = prevSnapshot.slice(Math.max(0, d - 24), d + 24).replace(/\n/g, "\\n");
+                    const b = effectiveText.slice(Math.max(0, d - 24), d + 24).replace(/\n/g, "\\n");
+                    dbg(`rewrite sameLen=${effectiveText.length} at=${d}`, { a, b });
+                }
+            }
+
+            if (allowOutput && emitUntil > committedLen) {
+                const newContent = effectiveText.slice(committedLen, emitUntil);
+                buffer += newContent;
+                accumulatedText += newContent;
+                committedLen = emitUntil;
+                flushBuffer();
+            }
+
+            prevSnapshot = effectiveText;
 
             if (hasStop) {
                 stopButtonSeen = true;
@@ -269,21 +324,40 @@ class ChatGPTWebClient {
             }
         }
 
-        const finalTextRaw = await this.page.evaluate((selector) => {
-            const elements = document.querySelectorAll(selector);
-            if (!elements || elements.length === 0) return "";
-            return elements[elements.length - 1].innerText;
-        }, answer);
+        // After streaming appears done, give the DOM a brief chance to settle.
+        const readAnswerText = async () => {
+            return await this.page.evaluate((selector) => {
+                const elements = document.querySelectorAll(selector);
+                if (!elements || elements.length === 0) return "";
+                return elements[elements.length - 1].innerText;
+            }, answer);
+        };
+
+        let finalTextRaw = await readAnswerText();
+        for (let i = 0; i < 5; i++) {
+            await wait(120); // small grace to capture trailing characters
+            const t = await readAnswerText();
+            if (t === finalTextRaw) break;
+            finalTextRaw = t;
+        }
 
         let finalText = finalTextRaw;
         if (previousLastText && finalText.startsWith(previousLastText)) {
             finalText = finalText.slice(previousLastText.length);
         }
 
-        if (finalText.length > lastText.length && (!isPlaceholderText(finalText) || stopButtonSeen)) {
-            const newContent = finalText.substring(lastText.length);
+        if (streamDebug) {
+            const tail = extractControlTail(finalText);
+            if (tail) dbg("finalTail", { tail, len: finalText.length, committedLen });
+        }
+
+        const finalPlaceholderOnly = !stopButtonSeen && isPlaceholderText(finalText);
+        const finalAllowOutput = !finalPlaceholderOnly || Date.now() - startTime > placeholderGraceMs;
+        if (finalAllowOutput && finalText.length > committedLen) {
+            const newContent = finalText.slice(committedLen);
             buffer += newContent;
             accumulatedText += newContent;
+            committedLen = finalText.length;
         }
 
         if (buffer.length && !/^\s*$/.test(buffer)) {
@@ -291,11 +365,14 @@ class ChatGPTWebClient {
             buffer = "";
         }
 
-        if (accumulatedText.includes("{{!NEWCHAT!}}")) {
+        // Use the final stabilized text for control tokens.
+        const fullTextForControl = finalText;
+
+        if (fullTextForControl.includes("{{!NEWCHAT!}}")) {
             await this.resetChatSession();
         }
 
-        if (accumulatedText.includes("{{!CHANGE_MODEL!}}")) {
+        if (fullTextForControl.includes("{{!CHANGE_MODEL!}}")) {
             await this.triggerModelChange("cursor");
         }
     }

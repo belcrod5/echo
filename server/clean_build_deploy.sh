@@ -19,6 +19,7 @@ rsync -a --delete \
       --exclude ".env" \
       --exclude "build_deply.sh" \
       --exclude "server" \
+      --exclude "cursor_work/*" \
       "$SRC_SERVER_DIR/"  "$DEST_SERVER_DIR/"
 
 if [ -f ../app-mac/echo/Resources/server.zip ]; then

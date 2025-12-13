@@ -19,12 +19,14 @@ const TOOL_CLIENTS_DIR = path.join(__dirname, "toolClients");
 const CURSOR_WORKDIR = path.join(__dirname, "cursor_work");
 const CURSOR_CONFIG_DIR = path.join(CURSOR_WORKDIR, ".cursor");
 const CURSOR_RULE_PATH = path.join(CURSOR_WORKDIR, ".cursorrules");
+const CURSOR_CLI_JSON_PATH = path.join(CURSOR_CONFIG_DIR, "cli.json");
 const CURSOR_MCP_CONFIG_PATH = path.join(CURSOR_CONFIG_DIR, "mcp.json");
 const CURSOR_LIB_DIR = path.join(__dirname, "cursor_lib");
 const CURSOR_BRIDGE_SCRIPT_PATH = path.join(CURSOR_LIB_DIR, "cursor_agent_bridge.py");
 const DEFAULT_LLM_CONFIG = {
     model: "gpt-4.1-mini",
     system_prompt: "",
+    cli_json: undefined,
     startup_processes: [],
     toolClients: [],
     enable_logging: false,
@@ -51,6 +53,71 @@ function writeLogFile(logType, data, enabled = false) {
     } catch (error) {
         console.error(`[CursorClient] Failed to write log file: ${error.message}`);
     }
+}
+
+function firstNonEmptyString(...candidates) {
+    for (const c of candidates) {
+        if (typeof c === "string" && c.trim() !== "") return c;
+    }
+    return undefined;
+}
+
+function labelIfPresent(label, value) {
+    if (value === undefined || value === null) return undefined;
+    const str = typeof value === "string" ? value : String(value);
+    if (!str.trim()) return undefined;
+    return `${label} ${str}`;
+}
+
+function truncateForDisplay(value, maxLength = 120) {
+    if (value === undefined || value === null) return undefined;
+    const str = typeof value === "string" ? value : String(value);
+    const s = str.trim();
+    if (!s) return undefined;
+    if (s.length <= maxLength) return s;
+    return `${s.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function toDisplayPath(p) {
+    if (typeof p !== "string") return undefined;
+    const s = p.trim();
+    if (!s) return undefined;
+
+    // Prefer a short, stable representation for logs.
+    try {
+        const rel = path.relative(process.cwd(), s);
+        if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) return rel;
+    } catch {
+        // ignore
+    }
+
+    const parts = s.split(path.sep).filter(Boolean);
+    if (parts.length >= 2) return parts.slice(-2).join(path.sep);
+    return s;
+}
+
+function formatSemSearchToolCall(semSearchToolCall) {
+    const query = truncateForDisplay(semSearchToolCall?.args?.query, 140);
+    if (!query) return undefined;
+    const dirs = semSearchToolCall?.args?.targetDirectories;
+    const dirText = Array.isArray(dirs) && dirs.length
+        ? truncateForDisplay(dirs.join(","), 60)
+        : undefined;
+    return dirText ? `semSearch ${query} (${dirText})` : `semSearch ${query}`;
+}
+
+function formatGrepToolCall(grepToolCall) {
+    const pattern = truncateForDisplay(grepToolCall?.args?.pattern, 80);
+    if (!pattern) return undefined;
+    const p = toDisplayPath(grepToolCall?.args?.path);
+    return p ? `grep ${pattern} (${p})` : `grep ${pattern}`;
+}
+
+function inferToolCallTypeName(toolCall) {
+    if (!toolCall || typeof toolCall !== "object") return undefined;
+    const key = Object.keys(toolCall).find((k) => toolCall[k] !== undefined);
+    if (!key) return undefined;
+    return key.endsWith("ToolCall") ? key.slice(0, -8) : key;
 }
 
 class CursorClient {
@@ -91,6 +158,13 @@ class CursorClient {
     }
 
     async init() {
+
+        // 起動時は .cursor_session_id を削除しておく
+        if (fs.existsSync(path.join(CURSOR_WORKDIR, ".cursor_session_id"))) {
+            fs.unlinkSync(path.join(CURSOR_WORKDIR, ".cursor_session_id"));
+            console.log("[CursorClient] .cursor_session_id を削除しました");
+        }
+        
         const llmConfigPath = path.join(SETTINGS_DIR, "llm_configs_cursor.json");
         const serverConfigPath = path.join(SETTINGS_DIR, "server_configs.json");
 
@@ -142,6 +216,7 @@ class CursorClient {
 
         this.writeSystemPromptFile();
         this.writeMcpConfig();
+        this.writeCliConfig();
     }
 
     writeSystemPromptFile() {
@@ -191,6 +266,19 @@ class CursorClient {
             console.log(`[CursorClient] MCP config written to ${CURSOR_MCP_CONFIG_PATH}`);
         } catch (error) {
             console.error("[CursorClient] Failed to write MCP config:", error);
+        }
+    }
+
+    writeCliConfig() {
+        try {
+            const cliConfig = this.llm_configs?.cli_json;
+            if (!cliConfig || typeof cliConfig !== "object") {
+                return;
+            }
+            fs.writeFileSync(CURSOR_CLI_JSON_PATH, JSON.stringify(cliConfig, null, 2), "utf8");
+            console.log(`[CursorClient] CLI config written to ${CURSOR_CLI_JSON_PATH}`);
+        } catch (error) {
+            console.error("[CursorClient] Failed to write CLI config:", error);
         }
     }
 
@@ -603,7 +691,25 @@ class CursorClient {
             }
 
             if (msg?.type === "tool_call") {
-                const toolName = msg.tool_call?.mcpToolCall?.args?.toolName || "unknown_tool";
+                const tc = msg.tool_call;
+                const toolName = firstNonEmptyString(
+                    tc?.mcpToolCall?.args?.toolName,
+                    tc?.shellToolCall?.args?.command,
+                    labelIfPresent("permissionDenied", tc?.shellToolCall?.result?.permissionDenied),
+                    tc?.globToolCall?.args?.globPattern,
+                    formatSemSearchToolCall(tc?.semSearchToolCall),
+                    formatGrepToolCall(tc?.grepToolCall),
+                    labelIfPresent("lsToolCall", tc?.lsToolCall?.args?.path),
+                    labelIfPresent("readToolCall", tc?.readToolCall?.args?.path),
+                    labelIfPresent("readToolCall", tc?.readToolCall?.result?.error),
+                    inferToolCallTypeName(tc),
+                ) ?? "unknown_tool";
+
+                if (toolName === "unknown_tool") {
+                    console.log("[CursorClient] ## unknown_tool ##");
+                    console.log(JSON.stringify(msg, null, 2));
+                }
+
                 if (msg.subtype === "started") {
                     onAssistant?.(`${toolName}を開始…`, { ...msg, _customType: "tool_start" });
                 } else if (msg.subtype === "completed") {

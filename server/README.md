@@ -61,3 +61,35 @@ app-mac/echo/Resources/server.zip に server(nodejs) を圧縮して配置しま
 
 *AivisSpeech は Walkers Inc. の商標です。*  
 ロゴ・名称の利用規程は公式ガイドラインを参照してください。
+
+
+# CursorClient
+パーミッションを設定して暴走を制御する
+~/.cursor/cli-config.json
+```json
+{
+  ...,
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Write(**)"
+    ],
+    "deny": [
+      "Read(/**)",
+      "Write(/**)",
+
+      "Shell(ls)",
+      "Shell(find)",
+      "Shell(mdfind)",
+      "Shell(rg)",
+      "Shell(cat)",
+      "Shell(head)",
+      "Shell(tail)",
+      "Shell(bash)",
+      "Shell(zsh)",
+      "Shell(sh)"
+    ]
+  },
+  ...
+}
+```

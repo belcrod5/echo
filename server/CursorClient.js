@@ -23,6 +23,7 @@ const CURSOR_CLI_JSON_PATH = path.join(CURSOR_CONFIG_DIR, "cli.json");
 const CURSOR_MCP_CONFIG_PATH = path.join(CURSOR_CONFIG_DIR, "mcp.json");
 const CURSOR_LIB_DIR = path.join(__dirname, "cursor_lib");
 const CURSOR_BRIDGE_SCRIPT_PATH = path.join(CURSOR_LIB_DIR, "cursor_agent_bridge.py");
+const CURSOR_WORKDIR_PLACEHOLDER = "{{CURSOR_WORKDIR}}";
 const DEFAULT_LLM_CONFIG = {
     model: "gpt-4.1-mini",
     system_prompt: "",
@@ -76,6 +77,24 @@ function truncateForDisplay(value, maxLength = 120) {
     if (!s) return undefined;
     if (s.length <= maxLength) return s;
     return `${s.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function replaceCursorWorkdirPlaceholderDeep(value) {
+    if (typeof value === "string") {
+        if (!value.includes(CURSOR_WORKDIR_PLACEHOLDER)) return value;
+        return value.split(CURSOR_WORKDIR_PLACEHOLDER).join(CURSOR_WORKDIR);
+    }
+    if (Array.isArray(value)) {
+        return value.map((v) => replaceCursorWorkdirPlaceholderDeep(v));
+    }
+    if (value && typeof value === "object") {
+        const out = {};
+        for (const [k, v] of Object.entries(value)) {
+            out[k] = replaceCursorWorkdirPlaceholderDeep(v);
+        }
+        return out;
+    }
+    return value;
 }
 
 function toDisplayPath(p) {
@@ -235,27 +254,28 @@ class CursorClient {
 
             if (Array.isArray(this.server_configs)) {
                 this.server_configs.forEach((server, index) => {
-                    if (!server || !server.command) return;
+                    const resolvedServer = replaceCursorWorkdirPlaceholderDeep(server);
+                    if (!resolvedServer || !resolvedServer.command) return;
                     const identifier =
-                        server.identifier ||
-                        server.id ||
-                        server.name ||
+                        resolvedServer.identifier ||
+                        resolvedServer.id ||
+                        resolvedServer.name ||
                         `server_${index + 1}`;
 
                     const entry = {
-                        command: server.command,
+                        command: resolvedServer.command,
                     };
-                    if (Array.isArray(server.args) && server.args.length > 0) {
-                        entry.args = server.args;
+                    if (Array.isArray(resolvedServer.args) && resolvedServer.args.length > 0) {
+                        entry.args = resolvedServer.args;
                     }
-                    if (server.cwd) {
-                        entry.cwd = server.cwd;
+                    if (resolvedServer.cwd) {
+                        entry.cwd = resolvedServer.cwd;
                     }
-                    if (Array.isArray(server.allowedDirs) && server.allowedDirs.length > 0) {
-                        entry.allowedDirs = server.allowedDirs;
+                    if (Array.isArray(resolvedServer.allowedDirs) && resolvedServer.allowedDirs.length > 0) {
+                        entry.allowedDirs = resolvedServer.allowedDirs;
                     }
-                    if (server.env && typeof server.env === "object") {
-                        entry.env = server.env;
+                    if (resolvedServer.env && typeof resolvedServer.env === "object") {
+                        entry.env = resolvedServer.env;
                     }
 
                     mcpConfig.mcpServers[identifier] = entry;

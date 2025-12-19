@@ -51,6 +51,7 @@ def main():
         "stream-json",
         "--stream-partial-output",  # 部分出力を有効化
         "--force",
+        "--approve-mcps",
         "--model",
         args.model,
     ]

@@ -37,6 +37,8 @@ dotenv.config();                                   // .env を読み込む
 const SETTINGS_DIR = path.join(__dirname, "settings");
 const DATA_DIR = path.join(__dirname, "data");
 const TOOL_CLIENTS_DIR = path.join(__dirname, "toolClients");
+const CURSOR_WORKDIR = path.join(__dirname, "cursor_work");
+const CURSOR_WORKDIR_PLACEHOLDER = "{{CURSOR_WORKDIR}}";
 const DEFAULT_LLM_CONFIG = {
     provider: "openrouter",
     model: "gpt-4o",
@@ -70,6 +72,24 @@ function writeLogFile(logType, data, enabled = false) {
     } catch (error) {
         console.error(`[MCPClient] Failed to write log file: ${error.message}`);
     }
+}
+
+function replaceCursorWorkdirPlaceholderDeep(value) {
+    if (typeof value === "string") {
+        if (!value.includes(CURSOR_WORKDIR_PLACEHOLDER)) return value;
+        return value.split(CURSOR_WORKDIR_PLACEHOLDER).join(CURSOR_WORKDIR);
+    }
+    if (Array.isArray(value)) {
+        return value.map((v) => replaceCursorWorkdirPlaceholderDeep(v));
+    }
+    if (value && typeof value === "object") {
+        const out = {};
+        for (const [k, v] of Object.entries(value)) {
+            out[k] = replaceCursorWorkdirPlaceholderDeep(v);
+        }
+        return out;
+    }
+    return value;
 }
 
 /** MCP ツール定義 → Vercel AI SDK 用の tool() オブジェクトに変換 */
@@ -221,7 +241,7 @@ class ApiClient {
                     options.reasoningEffort = this.llm_configs.reasoning_effort;
                 }
                 // this.llm = openai(model, options);
-                this.llm = openai.chat("qwen3-vl-8b-instruct");
+                this.llm = openai.chat(model);
                 break;
             }
             default:
@@ -266,13 +286,13 @@ class ApiClient {
                 this.startupProcesses.push(childProcess);
 
                 // 標準出力とエラー出力をログに出力
-                childProcess.stdout?.on('data', (data) => {
-                    console.log(`[Process ${childProcess.pid}] ${data.toString().trim()}`);
-                });
+                // childProcess.stdout?.on('data', (data) => {
+                //     console.log(`[Process ${childProcess.pid}] ${data.toString().trim()}`);
+                // });
 
-                childProcess.stderr?.on('data', (data) => {
-                    console.error(`[Process ${childProcess.pid}] ERROR: ${data.toString().trim()}`);
-                });
+                // childProcess.stderr?.on('data', (data) => {
+                //     console.error(`[Process ${childProcess.pid}] ERROR: ${data.toString().trim()}`);
+                // });
 
                 childProcess.on('error', (error) => {
                     console.error(`[MCPClient] Failed to start process "${processCommand}":`, error.message);
@@ -303,14 +323,19 @@ class ApiClient {
 
     /*────────────────────  MCP サーバー起動 & 接続  ─────────────────────*/
     async connectToServers() {
+        if (!Array.isArray(this.server_configs) || this.server_configs.length === 0) {
+            console.log("[MCPClient] No MCP servers configured");
+            return;
+        }
+
         for (const server of this.server_configs) {
+            const resolvedServer = replaceCursorWorkdirPlaceholderDeep(server);
             const {
                 command,
                 args = [],
                 cwd = process.cwd(),
-                allowedDirs = [],
-                // env = {},
-            } = server;
+                env = {},
+            } = resolvedServer ?? {};
 
             if (!command) {
                 console.warn("[MCPClient] Skipped misconfigured server (command missing)");
@@ -319,11 +344,22 @@ class ApiClient {
 
             console.log(`[MCPClient] Launching MCP server: ${command} ${args.join(" ")}`);
             try {
+                // IMPORTANT:
+                // - Pass-through process.env so PATH/HOME/etc are preserved.
+                // - Otherwise "npx" (often a shebang script using /usr/bin/env node) can fail to start.
+                const mergedEnv = { ...process.env };
+                if (env && typeof env === "object") {
+                    for (const [k, v] of Object.entries(env)) {
+                        if (v === undefined || v === null) continue;
+                        mergedEnv[String(k)] = typeof v === "string" ? v : String(v);
+                    }
+                }
+
                 const transport = new StdioClientTransport({
                     command,          // 例: 'npx'
                     args,             // 例: ['-y', '@modelcontextprotocol/server-filesystem', dir]
                     cwd,
-                    // env,
+                    env: mergedEnv,
                 });
 
                 // Client メタ情報（任意）と空 capabilities を与えて生成

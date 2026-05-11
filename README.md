@@ -4,6 +4,12 @@
 
 # Echo
 
+English summary:
+Echo is a macOS voice assistant powered by AI and MCP.
+It helps users run everyday tasks through speech and agent tooling.
+Built with Swift + Node.js, with MCP integrations for automation.
+
+
 macOS向けの音声操作アシスタントです。OSの操作や定型的なタスクを、ユーザーの隣にいるエージェントとして実行することを目指しています。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

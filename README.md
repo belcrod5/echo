@@ -17,7 +17,7 @@ macOS向けの音声操作アシスタントです。OSの操作や定型的な�
 
 ## 概要
 
-本アプリケーションは、より柔軟で実践的なAIアシスタントの可能性を探るために開発されました。Apple Intelligenceの思想とは異なり、利便性のためにある程度のリスクを許容する実験的なプロジェクトです。
+Echoは、macOS上の音声操作とMCP連携を検証する実験的なAIアシスタントです。ローカル権限、送信データ、誤操作リスクを明示し、安全に検証できる設計を重視しています。
 
 音声コマンドによってMacの操作を補助し、将来的には自律的なエージェントとしてユーザーの作業を代行することを目指しています。
 
@@ -37,13 +37,13 @@ macOS向けの音声操作アシスタントです。OSの操作や定型的な�
 | Google検索           | 調べ物               | [playwright-mcp](https://github.com/microsoft/playwright-mcp) |
 | 天気確認           | 今日・週間の天気を取得               | [playwright-mcp](https://github.com/microsoft/playwright-mcp) |
 | 買い物リスト管理   | 追加、編集、削除、確認               | [filesystem-mcp](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem)     |
-| Youtube広告のスキップ   | 広告のスキップ               | [mac-control-mcp](https://github.com/belcrod5/mac-control-mcp)     |
+| Web画面上のボタン検出・クリック自動化デモ   | ブラウザ上の定型UI操作を実行               | [mac-control-mcp](https://github.com/belcrod5/mac-control-mcp)     |
 | アプリケーションOCR   | Macで起動中のアプリのテキストを判別、判別からクリックも可能               | [mac-control-mcp](https://github.com/belcrod5/mac-control-mcp)     |
 | 音量操作   | Macの音量をパーセンテージ指定で変更します               | [mac-control-mcp](https://github.com/belcrod5/mac-control-mcp)     |
 | ノイズキャンセル操作   | ノイズキャンセルのON、OFFの操作               | [mac-control-mcp](https://github.com/belcrod5/mac-control-mcp)     |
 
 
-**注意:** 本バージョンでは、ユーザーの音声や操作に関する情報が、設定されたLLMのサーバーへ送信されます。プライバシーに関するリスクをご理解の上、ご自身の責任でご使用ください。
+**注意:** 本バージョンでは、ユーザーの音声や操作に関する情報が、設定されたLLMサーバーへ送信されます。検証用途を前提に、機密情報を扱わない環境で利用してください。
 
 ---
 
@@ -152,7 +152,7 @@ LLMのモデルによっては、以下のような意図しない動作が確�
 
 ## コントリビュート
 
-本プロジェクトへの貢献を歓迎します。バグ報告や機能提案は[Issues](https://github.com/YOUR_USERNAME/echo/issues)へ、コードの改善はPull Requestにてお願いします。
+本プロジェクトへの貢献を歓迎します。バグ報告や機能提案は[Issues](https://github.com/belcrod5/echo/issues)へ、コードの改善はPull Requestにてお願いします。
 
 初めての方は `good first issue` ラベルの付いたIssueから着手することをお勧めします。
 
@@ -168,4 +168,4 @@ LLMのモデルによっては、以下のような意図しない動作が確�
 
 本プロジェクトは [MIT License](LICENSE) の下で公開されています。
 
-ただし、将来的にプロジェクトの継続性を担保するため、商用利用を制限するライセンス（BUSLなど）へ変更する可能性があることをご了承ください。
+現行バージョンはMIT Licenseで公開しています。将来の新バージョンでは、開発継続性のためライセンス方針を見直す可能性があります。
